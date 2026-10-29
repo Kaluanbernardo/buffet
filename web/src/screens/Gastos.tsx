@@ -1,11 +1,19 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Plus, Search, Trash2, X } from 'lucide-react'
+import { Plus, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { Transaction } from '../data/types'
-import { dayLabel, money, monthKey, monthName, plural, shiftMonth, today } from '../lib/format'
-import { catColor, CategoryIcon, Empty, ScreenHeader } from '../components/ui'
+import { categoryShare, monthDays, monthSummary, weekDays } from '../data/derive'
+import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
+import { catColor, CategoryIcon, Empty, PeriodSwitcher, ScreenHeader, Segmented } from '../components/ui'
+import { DailyBars, Donut, WeekBars } from '../components/charts'
 import { useActions } from '../components/Actions'
+
+/** Day totals in the strip: "86", "1,2 mil" — the R$ is implied. */
+const num = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 })
+
+type View = 'dia' | 'semana' | 'mes'
+const VIEWS: { key: View; label: string }[] = [{ key: 'dia', label: 'Dia' }, { key: 'semana', label: 'Semana' }, { key: 'mes', label: 'Mês' }]
 
 const norm = (v: string) => v.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
 
@@ -17,21 +25,38 @@ export default function Gastos() {
   const [params, setParams] = useSearchParams()
   const cat = params.get('cat')
   const setCat = (c: string | null) => setParams((p) => { if (c) p.set('cat', c); else p.delete('cat'); return p }, { replace: true })
+  const view: View = (['dia', 'semana', 'mes'] as const).find((v) => v === params.get('v')) ?? 'mes'
+  const setView = (v: View) => setParams((p) => { p.set('v', v); return p }, { replace: true })
   const [mk, setMk] = useState(current)
+  const t = today()
+  const [day, setDay] = useState(t)
+  const [wk, setWk] = useState(weekStart(t))
   const [q, setQ] = useState('')
 
-  const inMonth = data.transactions.filter((t) => monthKey(t.date) === mk)
-  const usedCats = [...new Set(inMonth.map((t) => t.category))].sort((a, b) => data.config.categories.indexOf(a) - data.config.categories.indexOf(b))
+  // Period first (the chosen day, week or month), then category and search on top of it.
+  const inMonth = data.transactions.filter((x) => monthKey(x.date) === mk)
+  const wkEnd = addDays(wk, 6)
+  const inWeek = data.transactions.filter((x) => x.date >= wk && x.date <= wkEnd)
+  const scope = view === 'semana' ? inWeek : inMonth
+  const usedCats = [...new Set(scope.map((x) => x.category))].sort((a, b) => data.config.categories.indexOf(a) - data.config.categories.indexOf(b))
   if (cat && !usedCats.includes(cat)) usedCats.push(cat)
   const needle = norm(q.trim())
-  const list = inMonth
-    .filter((t) => (!cat || t.category === cat) && (!needle || norm(t.merchant).includes(needle) || norm(t.note ?? '').includes(needle)))
-    .sort((a, b) => b.date.localeCompare(a.date))
-  const total = list.reduce((s, t) => s + t.amount, 0)
+  const matches = (x: Transaction) => (!cat || x.category === cat) && (!needle || norm(x.merchant).includes(needle) || norm(x.note ?? '').includes(needle))
+  const shown = scope.filter(matches)
+  const list = (view === 'dia' ? shown.filter((x) => x.date === day) : shown).sort((a, b) => b.date.localeCompare(a.date))
+  const total = list.reduce((s, x) => s + x.amount, 0)
   const filtered = Boolean(cat || needle)
 
+  const firstWeek = weekStart(`${first}-01`)
+  const pickMonth = (n: number) => {
+    const next = shiftMonth(mk, n)
+    setMk(next)
+    setDay(next === current ? t : `${next}-${String(new Date(Number(next.slice(0, 4)), Number(next.slice(5)), 0).getDate()).padStart(2, '0')}`)
+  }
+  const periodName = view === 'dia' ? dayLabel(day).toLowerCase() : view === 'semana' ? (wk === weekStart(t) ? 'nesta semana' : `na semana ${weekRange(wk)}`) : monthName(mk).toLowerCase()
+
   const days = new Map<string, Transaction[]>()
-  for (const t of list) days.set(t.date, [...(days.get(t.date) ?? []), t])
+  for (const x of list) days.set(x.date, [...(days.get(x.date) ?? []), x])
 
   const remove = (t: Transaction) => {
     update((d) => ({ ...d, transactions: d.transactions.filter((x) => x.id !== t.id) }))
@@ -46,16 +71,14 @@ export default function Gastos() {
         action={<button className="btn h-11 px-4" onClick={openNew}><Plus size={18} strokeWidth={2.5} />Novo</button>}
       />
 
-      <div className="mb-3 flex items-center justify-between gap-2 rounded-full border border-line bg-surface p-1">
-        <button type="button" aria-label="Mês anterior" disabled={mk <= first} onClick={() => setMk(shiftMonth(mk, -1))}
-          className="grid size-10 place-items-center rounded-full text-muted transition-colors hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent">
-          <ChevronLeft size={20} />
-        </button>
-        <p className="text-[15px] font-bold" aria-live="polite">{monthName(mk)}</p>
-        <button type="button" aria-label="Próximo mês" disabled={mk >= current} onClick={() => setMk(shiftMonth(mk, 1))}
-          className="grid size-10 place-items-center rounded-full text-muted transition-colors hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent">
-          <ChevronRight size={20} />
-        </button>
+      <Segmented value={view} options={VIEWS} onChange={setView} label="Agrupar gastos por" />
+      <div className="mt-3">
+        {view === 'semana' ? (
+          <PeriodSwitcher unit="Semana" label={wk === weekStart(t) ? 'Esta semana' : wk === addDays(weekStart(t), -7) ? 'Semana passada' : weekRange(wk)}
+            prevDisabled={wk <= firstWeek} nextDisabled={wk >= weekStart(t)} onPrev={() => setWk(addDays(wk, -7))} onNext={() => setWk(addDays(wk, 7))} />
+        ) : (
+          <PeriodSwitcher label={monthName(mk)} prevDisabled={mk <= first} nextDisabled={mk >= current} onPrev={() => pickMonth(-1)} onNext={() => pickMonth(1)} />
+        )}
       </div>
 
       <div className="relative mb-3">
@@ -82,14 +105,18 @@ export default function Gastos() {
         </div>
       )}
 
+      {view === 'dia' && <DayStrip key={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
+      {view === 'semana' && <WeekPanel key={wk} start={wk} tx={data.transactions.filter(matches)} />}
+      {view === 'mes' && <MonthPanel key={mk} mk={mk} tx={shown} onPick={(c) => setCat(c === cat ? null : c)} />}
+
       {list.length === 0 ? (
         filtered ? (
           <Empty action={<button className="link" onClick={() => { setQ(''); setCat(null) }}>Limpar filtros</button>}>
-            Nada encontrado em {monthName(mk).toLowerCase()} com esses filtros.
+            Nada encontrado {view === 'mes' ? 'em ' : ''}{periodName} com esses filtros.
           </Empty>
         ) : (
           <Empty action={<button className="link" onClick={openNew}>Lançar gasto</button>}>
-            Nenhum gasto em {monthName(mk).toLowerCase()}. Quando lançar, ele aparece aqui agrupado por dia.
+            Nenhum gasto {view === 'mes' ? 'em ' : ''}{periodName}. Quando lançar, ele aparece aqui agrupado por dia.
           </Empty>
         )
       ) : (
@@ -121,5 +148,83 @@ export default function Gastos() {
         </div>
       )}
     </div>
+  )
+}
+
+/** Dia: horizontal calendar strip of the month, each day with its total; the chosen day's list sits below. */
+function DayStrip({ days, value, onChange }: { days: { date: string; day: number; total: number }[]; value: string; onChange: (d: string) => void }) {
+  const t = today()
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => { ref.current?.querySelector<HTMLElement>('[aria-checked="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest' }) }, [])
+  return (
+    <div ref={ref} role="radiogroup" aria-label="Escolher dia" className="-mx-4 mb-5 flex gap-1.5 overflow-x-auto px-4 pb-1">
+      {days.map((d) => {
+        const on = d.date === value
+        const future = d.date > t
+        return (
+          <button key={d.date} type="button" role="radio" aria-checked={on} disabled={future} onClick={() => onChange(d.date)}
+            aria-label={`${dayLabel(d.date)}: ${d.total > 0 ? money(d.total) : 'sem gastos'}`}
+            className={`flex w-[52px] flex-none flex-col items-center gap-1 rounded-2xl border py-2 transition-colors disabled:opacity-35 ${on ? 'border-ink bg-ink text-ground' : 'border-line bg-surface text-muted hover:text-ink'}`}>
+            <span className="text-[11px] font-semibold uppercase">{parseISO(d.date).toLocaleDateString('pt-BR', { weekday: 'short' }).slice(0, 3)}</span>
+            <span className={`text-[17px] leading-none font-bold ${d.date === t && !on ? 'text-accent' : ''}`}>{d.day}</span>
+            <span aria-hidden className={`money h-3.5 text-[10px] leading-none font-semibold ${on ? '' : d.total > 0 ? 'text-ink' : 'text-faint'}`}>
+              {future ? '' : d.total > 0 ? (valuesHidden() ? '••' : num.format(d.total < 1000 ? Math.round(d.total) : d.total)) : '–'}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Semana: seg → dom bars against last week, plus the change in words. */
+function WeekPanel({ start, tx }: { start: string; tx: Transaction[] }) {
+  const days = weekDays(tx, start)
+  const prev = weekDays(tx, addDays(start, -7))
+  const t = today()
+  // Compare like with like: in the current week only the days already lived.
+  const upto = days.filter((d) => d.date <= t).length
+  const sum = (xs: { total: number }[]) => xs.reduce((s, d) => s + d.total, 0)
+  const now = sum(days.slice(0, upto))
+  const before = sum(prev.slice(0, upto))
+  const hasPrev = prev.some((d) => d.total > 0)
+  const diff = before > 0 ? (now - before) / before : null
+  return (
+    <section className="card mb-5 p-4" aria-label={`Semana ${weekRange(start)}`}>
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-muted">{weekRange(start)}</p>
+          <p className="money text-[22px] leading-tight font-extrabold tracking-[-0.03em]">{money(sum(days))}</p>
+        </div>
+        {hasPrev && (
+          <p className="money text-right text-[13px] text-muted">
+            {diff === null ? <>semana anterior<br />{money(before)}</>
+              : <><span className={diff > 0.05 ? 'font-semibold text-warning' : diff < -0.05 ? 'font-semibold text-accent' : 'font-semibold'}>
+                  {diff > 0 ? '+' : diff < 0 ? '−' : ''}{Math.abs(Math.round(diff * 100))}%
+                </span> vs semana anterior<br /><span className="text-faint">{upto < 7 ? `mesmos ${upto} dias: ` : ''}{money(before)}</span></>}
+          </p>
+        )}
+      </div>
+      <WeekBars days={days} prev={hasPrev ? prev : undefined} />
+    </section>
+  )
+}
+
+/** Mês: category donut (tap filters) + one bar per day with the plan's daily allowance. */
+function MonthPanel({ mk, tx, onPick }: { mk: string; tx: Transaction[]; onPick: (c: string) => void }) {
+  const { data } = useBuffet()
+  const share = categoryShare(tx)
+  const m = monthSummary(data, mk)
+  const days = monthDays(tx, mk)
+  if (share.length === 0) return null
+  const name = monthName(mk).toLowerCase()
+  return (
+    <section className="card mb-5 space-y-5 p-4" aria-label={`Resumo de ${name}`}>
+      <Donut slices={share} label={`Gastos de ${name} por categoria`} caption={`em ${monthName(mk).split(' ')[0].toLowerCase()}`} onPick={onPick} />
+      <div className="border-t border-rule pt-4">
+        <DailyBars days={days} allowance={m.limit > 0 ? m.limit / m.clock.days : undefined}
+          from={`1º de ${m.clock.name}`} to={`dia ${m.clock.days}`} label={`Gastos por dia em ${name}`} />
+      </div>
+    </section>
   )
 }

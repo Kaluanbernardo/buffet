@@ -40,12 +40,34 @@ export const dayLabel = (iso: string) => {
   return parseISO(iso).toLocaleDateString('pt-BR', { weekday: 'short', day: 'numeric', month: 'short' })
 }
 
-/** Month position in São Paulo time: day of month, days in month, fraction elapsed (counting today). */
-export const monthClock = () => {
-  const [y, m, d] = today().split('-').map(Number)
+/**
+ * Month position in São Paulo time: day of month, days in month, fraction elapsed (counting today).
+ * A past month reads as finished (day = days, nothing left); `current` says whether it is this month.
+ */
+export const monthClock = (mk = monthKey(today())) => {
+  const [y, m] = mk.split('-').map(Number)
   const days = new Date(y, m, 0).getDate()
   const name = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long' })
-  return { day: d, days, left: days - d + 1, elapsed: d / days, name, year: y }
+  const t = today()
+  const current = monthKey(t) === mk
+  const d = current ? Number(t.slice(8, 10)) : mk < monthKey(t) ? days : 0
+  return { day: d, days, left: days - d + (current ? 1 : 0), elapsed: d / days, name, year: y, current }
+}
+
+/** ISO date shifted by n days. */
+export const addDays = (iso: string, n: number) => {
+  const d = parseISO(iso)
+  d.setDate(d.getDate() + n)
+  return d.toLocaleDateString('sv-SE')
+}
+
+/** Monday of the week containing `iso` (weeks run seg–dom, as on Brazilian calendars at work). */
+export const weekStart = (iso: string) => addDays(iso, -((parseISO(iso).getDay() + 6) % 7))
+
+/** "26 out – 1 nov" for the week starting on `start`. */
+export const weekRange = (start: string) => {
+  const f = (iso: string) => parseISO(iso).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' }).replace(/\.| de/g, '')
+  return `${f(start)} – ${f(addDays(start, 6))}`
 }
 
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`

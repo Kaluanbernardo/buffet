@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { Eye, EyeOff } from 'lucide-react'
+import { money } from '../lib/format'
+import { ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react'
 import {
   UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shapes, X, type LucideIcon,
 } from 'lucide-react'
@@ -148,4 +149,45 @@ export function HideValuesButton({ hidden, onToggle }: { hidden: boolean; onTogg
       {hidden ? <EyeOff size={19} /> : <Eye size={19} />}
     </button>
   )
+}
+
+/** ‹ label › pill used for months (Gastos, Orçamento) and weeks. */
+export function PeriodSwitcher({ label, onPrev, onNext, prevDisabled, nextDisabled, unit = 'Mês', className = 'mb-3' }: {
+  label: ReactNode; onPrev: () => void; onNext: () => void; prevDisabled?: boolean; nextDisabled?: boolean; unit?: 'Mês' | 'Semana'; className?: string
+}) {
+  const btn = 'grid size-10 place-items-center rounded-full text-muted transition-colors hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent'
+  const [prev, next] = unit === 'Mês' ? ['Mês anterior', 'Próximo mês'] : ['Semana anterior', 'Próxima semana']
+  return (
+    <div className={`flex items-center justify-between gap-2 rounded-full border border-line bg-surface p-1 ${className}`}>
+      <button type="button" aria-label={prev} disabled={prevDisabled} onClick={onPrev} className={btn}><ChevronLeft size={20} /></button>
+      <p className="text-[15px] font-bold" aria-live="polite">{label}</p>
+      <button type="button" aria-label={next} disabled={nextDisabled} onClick={onNext} className={btn}><ChevronRight size={20} /></button>
+    </div>
+  )
+}
+
+/** Segmented control (radio semantics): Dia | Semana | Mês. */
+export function Segmented<T extends string>({ value, options, onChange, label }: {
+  value: T; options: { key: T; label: string }[]; onChange: (v: T) => void; label: string
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="grid auto-cols-fr grid-flow-col gap-1 rounded-full border border-line bg-surface p-1">
+      {options.map((o) => (
+        <button key={o.key} type="button" role="radio" aria-checked={value === o.key} onClick={() => onChange(o.key)}
+          className={`h-9 rounded-full text-sm font-semibold transition-colors ${value === o.key ? 'bg-raised text-ink' : 'text-muted hover:text-ink'}`}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * YNAB's "Available" pill, in words: "R$ 120 disponível" (on pace), amber when ahead of pace, coral
+ * "R$ 35 acima" when overspent. Without a limit it only reports the spend.
+ */
+export function AvailablePill({ left, limit, spent, tone }: { left: number; limit: number; spent: number; tone: Tone }) {
+  if (limit <= 0) return <span className={`pill ${spent > 0 ? 'pill-warn' : 'pill-neutral'} money`}>{spent > 0 ? `${money(spent)} sem limite` : 'Sem limite'}</span>
+  if (left < 0) return <span className="pill pill-bad money">{money(-left)} acima</span>
+  return <span className={`pill ${tone === 'warn' ? 'pill-warn' : 'pill-ok'} money`}>{money(left)} disponível</span>
 }

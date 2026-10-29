@@ -11,6 +11,7 @@ export const seed = (): BuffetData => ({
   ],
   reserves: [{ id: 'seed-r1', name: 'Reserva de emergência', target: 0, current: 0 }],
   investments: [],
+  incomes: {},
   config: {
     categories: DEFAULT_CATEGORIES,
     banks: [

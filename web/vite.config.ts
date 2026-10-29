@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  base: '/buffet/',
+  base: '/',
   plugins: [
     react(),
     tailwindcss(),
@@ -16,8 +16,8 @@ export default defineConfig({
         short_name: 'Buffet',
         description: 'Finanças pessoais do Kaluan.',
         lang: 'pt-BR',
-        start_url: '/buffet/',
-        scope: '/buffet/',
+        start_url: '/',
+        scope: '/',
         display: 'standalone',
         orientation: 'portrait',
         theme_color: '#0E1116',

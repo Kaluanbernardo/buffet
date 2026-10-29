@@ -1,6 +1,6 @@
 # Buffet Kaluan
 
-PWA pessoal de finanças (pt-BR, BRL). Publicado em **https://kaluanbernardo.github.io/buffet/**.
+PWA pessoal de finanças (pt-BR, BRL). Publicado em **URL no Vercel (repo privado)**.
 
 ## Rodar local
 ```bash

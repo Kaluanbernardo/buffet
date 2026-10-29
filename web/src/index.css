@@ -1,0 +1,9 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+html, body, #root { background: #0E1116; color: #E6E8EB; min-height: 100%; }
+body { font-family: 'Inter Variable', system-ui, -apple-system, sans-serif; -webkit-tap-highlight-color: transparent; }
+.money { font-variant-numeric: tabular-nums; }
+.card { background: #161B22; border: 1px solid #222A35; border-radius: 18px; padding: 16px; }
+.input { background: #0E1116; border: 1px solid #2A3340; border-radius: 12px; padding: 10px 12px; width: 100%; color: inherit; }
+.btn { background: #34D399; color: #0E1116; font-weight: 600; border-radius: 12px; padding: 10px 14px; }
+.btn-ghost { border: 1px solid #2A3340; border-radius: 12px; padding: 10px 14px; }

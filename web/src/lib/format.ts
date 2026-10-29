@@ -1,0 +1,6 @@
+const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
+export const money = (v: number) => brl.format(v)
+export const monthKey = (d: string | Date = new Date()) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 7)
+export const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' })
+export const fmtDate = (iso: string) => iso.split('-').reverse().join('/')
+export const uid = () => crypto.randomUUID()

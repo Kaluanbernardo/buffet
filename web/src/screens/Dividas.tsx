@@ -1,23 +1,91 @@
 import { useBuffet } from '../data/store'
-import { money } from '../lib/format'
+import { daysUntilDue, dueLabel, isOpen } from '../data/derive'
+import { money, plural } from '../lib/format'
+import { Empty, ScreenHeader, Section } from '../components/ui'
+import { useActions } from '../components/Actions'
+import type { Debt } from '../data/types'
 
 export default function Dividas() {
-  const { data } = useBuffet()
-  const monthly = data.debts.filter((d) => d.installments_paid < d.installments_total).reduce((s, d) => s + d.installment_amount, 0)
+  const { data, update } = useBuffet()
+  const { notify } = useActions()
+  const open = data.debts.filter(isOpen).map((d) => ({ ...d, inDays: daysUntilDue(d.due_day) })).sort((a, b) => a.inDays - b.inDays)
+  const done = data.debts.filter((d) => !isOpen(d))
+  const monthly = open.reduce((s, d) => s + d.installment_amount, 0)
+  const balance = open.reduce((s, d) => s + d.installment_amount * (d.installments_total - d.installments_paid), 0)
+  const lastMonths = open.reduce((n, d) => Math.max(n, d.installments_total - d.installments_paid), 0)
+
+  const pay = (d: Debt) => {
+    const step = (n: number) => update((x) => ({ ...x, debts: x.debts.map((y) => (y.id === d.id ? { ...y, installments_paid: n } : y)) }))
+    step(d.installments_paid + 1)
+    notify({ msg: `Parcela ${d.installments_paid + 1}/${d.installments_total} de ${d.description} paga`, undo: () => step(d.installments_paid) })
+  }
+
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Dívidas</h1>
-      <div className="card"><p className="text-sm text-gray-400">Parcelas no mês</p><p className="money text-2xl font-bold">{money(monthly)}</p></div>
-      <div className="card divide-y divide-[#222A35] p-0">
-        {data.debts.map((d) => (
-          <div key={d.id} className="px-4 py-3 flex justify-between">
-            <div><p className="font-medium">{d.description}</p>
-              <p className="text-xs text-gray-400">{d.bank} · {d.installments_paid}/{d.installments_total} · vence dia {d.due_day}</p></div>
-            <span className="money font-semibold">{money(d.installment_amount)}</span>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-gray-500">Importação de faturas virá com Open Finance / Supabase.</p>
+    <div>
+      <ScreenHeader title="Dívidas" sub={open.length ? `${plural(open.length, 'compromisso', 'compromissos')} em aberto` : 'Nada em aberto'} />
+
+      <section className="card grid grid-cols-2 divide-x divide-rule">
+        <div className="p-4">
+          <p className="text-sm font-semibold text-muted">Parcelas por mês</p>
+          <p className="money mt-1 text-[22px] leading-none font-extrabold tracking-[-0.03em]">{money(monthly)}</p>
+        </div>
+        <div className="p-4">
+          <p className="text-sm font-semibold text-muted">Saldo a pagar</p>
+          <p className="money mt-1 text-[22px] leading-none font-bold tracking-[-0.03em] text-muted">{money(balance)}</p>
+          {lastMonths > 0 && <p className="mt-1.5 text-xs text-faint">quita em {plural(lastMonths, 'mês', 'meses')}</p>}
+        </div>
+      </section>
+
+      <Section title="Em aberto">
+        {open.length === 0 ? (
+          <Empty>Nenhuma parcela em aberto.</Empty>
+        ) : (
+          <ul className="card divide-y divide-rule px-4">
+            {open.map((d) => {
+              const pct = (d.installments_paid / d.installments_total) * 100
+              const soon = d.inDays <= 3
+              return (
+                <li key={d.id} className="py-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold">{d.description}</p>
+                      <p className="text-[13px] text-faint">{d.bank} · todo dia {d.due_day}</p>
+                    </div>
+                    <div className="flex-none text-right">
+                      <p className="money font-bold">{d.installment_amount > 0 ? money(d.installment_amount) : <span className="text-faint">—</span>}</p>
+                      <span className={`pill mt-1 ${soon ? 'pill-warn' : 'pill-neutral'}`}>{dueLabel(d.inDays)}</span>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center gap-3">
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raised" role="meter" aria-label={`Parcelas pagas de ${d.description}`} aria-valuemin={0} aria-valuemax={d.installments_total} aria-valuenow={d.installments_paid}>
+                      {pct > 0 && <div className="h-full rounded-full bg-ink/70" style={{ width: `${pct}%` }} />}
+                    </div>
+                    <span className="money flex-none text-xs text-muted">{d.installments_paid}/{d.installments_total} pagas</span>
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <button className="btn-ghost h-9 px-3.5 text-[13px]" onClick={() => pay(d)}>Marcar parcela paga</button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </Section>
+
+      {done.length > 0 && (
+        <Section title="Quitadas">
+          <ul className="card divide-y divide-rule px-4">
+            {done.map((d) => (
+              <li key={d.id} className="flex items-center justify-between gap-3 py-3">
+                <span className="truncate text-muted">{d.description}</span>
+                <span className="pill pill-ok">Quitada</span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      <p className="mt-6 px-1 text-xs text-faint">A importação automática de faturas chega com Open Finance.</p>
     </div>
   )
 }

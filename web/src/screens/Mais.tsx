@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { Download, Eye, EyeOff, LogOut } from 'lucide-react'
+import { Download, Eye, EyeOff, LogOut, Monitor, Moon, Sun } from 'lucide-react'
+import { useTheme, type ThemePref } from '../lib/theme'
 import { useBuffet } from '../data/store'
 import { money, money0, monthKey, monthName, parseMoney, plural, today } from '../lib/format'
 import { download, monthCsv } from '../lib/csv'
@@ -9,9 +10,16 @@ import type { Reserve } from '../data/types'
 
 const fmtInput = (v: number) => (v ? v.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '')
 
+const THEMES: { key: ThemePref; label: string; Icon: typeof Sun }[] = [
+  { key: 'system', label: 'Sistema', Icon: Monitor },
+  { key: 'light', label: 'Claro', Icon: Sun },
+  { key: 'dark', label: 'Escuro', Icon: Moon },
+]
+
 export default function Mais({ onLogout }: { onLogout: () => void }) {
   const { data, update, hidden, toggleHidden } = useBuffet()
   const { notify } = useActions()
+  const { pref, setPref } = useTheme()
   const invested = data.investments.reduce((s, i) => s + i.amount, 0)
   const reserved = data.reserves.reduce((s, r) => s + r.current, 0)
   const current = monthKey(today())
@@ -127,6 +135,24 @@ export default function Mais({ onLogout }: { onLogout: () => void }) {
         </div>
       </Section>
 
+      <Section title="Aparência">
+        <div className="card p-4">
+          <p id="theme-label" className="font-semibold">Tema</p>
+          <p className="text-[13px] text-faint">“Sistema” acompanha o claro/escuro do aparelho.</p>
+          <div role="radiogroup" aria-labelledby="theme-label" className="mt-3 grid grid-cols-3 gap-1 rounded-full border border-line bg-ground p-1">
+            {THEMES.map(({ key, label, Icon }) => {
+              const on = pref === key
+              return (
+                <button key={key} type="button" role="radio" aria-checked={on} onClick={() => setPref(key)}
+                  className={`flex h-10 items-center justify-center gap-1.5 rounded-full text-sm font-semibold transition-colors ${on ? 'bg-surface text-ink shadow-sm ring-1 ring-line' : 'text-muted hover:text-ink'}`}>
+                  <Icon size={16} />{label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </Section>
+
       <Section title="Privacidade e dados">
         <div className="card divide-y divide-rule px-4">
           <div className="flex items-center gap-3 py-3.5">
@@ -139,7 +165,7 @@ export default function Mais({ onLogout }: { onLogout: () => void }) {
             </div>
             <button type="button" role="switch" aria-checked={hidden} aria-labelledby="hide-label" onClick={toggleHidden}
               className={`relative h-7 w-12 flex-none rounded-full transition-colors ${hidden ? 'bg-accent' : 'bg-control'}`}>
-              <span aria-hidden className={`absolute top-1 left-1 size-5 rounded-full bg-ink transition-transform ${hidden ? 'translate-x-5' : ''}`} />
+              <span aria-hidden className={`absolute top-1 left-1 size-5 rounded-full bg-knob shadow-sm transition-transform ${hidden ? 'translate-x-5' : ''}`} />
             </button>
           </div>
           <div className="py-3.5">

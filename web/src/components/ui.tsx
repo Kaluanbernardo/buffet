@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { money } from '../lib/format'
-import { ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Eye, EyeOff, Moon, Sun } from 'lucide-react'
+import { useTheme } from '../lib/theme'
 import {
   UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shapes, X, type LucideIcon,
 } from 'lucide-react'
@@ -147,6 +148,18 @@ export function HideValuesButton({ hidden, onToggle }: { hidden: boolean; onTogg
     <button type="button" onClick={onToggle} aria-pressed={hidden} aria-label={hidden ? 'Mostrar valores' : 'Ocultar valores'}
       className="grid size-11 flex-none place-items-center rounded-full border border-line text-muted transition-colors hover:bg-raised hover:text-ink">
       {hidden ? <EyeOff size={19} /> : <Eye size={19} />}
+    </button>
+  )
+}
+
+/** Header shortcut: flips light/dark (an explicit pick; "Sistema" lives on Mais). */
+export function ThemeButton() {
+  const { theme, toggle } = useTheme()
+  const toLight = theme === 'dark'
+  return (
+    <button type="button" onClick={toggle} aria-label={toLight ? 'Usar tema claro' : 'Usar tema escuro'}
+      className="grid size-11 flex-none place-items-center rounded-full border border-line text-muted transition-colors hover:bg-raised hover:text-ink">
+      {toLight ? <Sun size={19} /> : <Moon size={19} />}
     </button>
   )
 }

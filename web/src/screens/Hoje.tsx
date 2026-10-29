@@ -3,7 +3,7 @@ import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import { categoryShare, dailySpend, daysUntilDue, dueLabel, isOpen, monthSummary } from '../data/derive'
 import { dayLabel, money, money0, plural } from '../lib/format'
-import { CategoryIcon, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, toneFor } from '../components/ui'
+import { CategoryIcon, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, ThemeButton, toneFor } from '../components/ui'
 import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
 
@@ -40,7 +40,7 @@ export default function Hoje() {
   return (
     <div>
       <ScreenHeader title="Hoje" sub={<span className="first-letter:uppercase inline-block">{dateLine}</span>}
-        action={<HideValuesButton hidden={hidden} onToggle={toggleHidden} />} />
+        action={<div className="flex gap-2"><ThemeButton /><HideValuesButton hidden={hidden} onToggle={toggleHidden} /></div>} />
 
       {/* 1 · The month's decision number */}
       <section className="card p-5" aria-labelledby="hero-label">

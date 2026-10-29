@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 import {
   UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shapes, X, type LucideIcon,
 } from 'lucide-react'
@@ -7,6 +8,18 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   Alimentação: UtensilsCrossed, Transporte: Bus, Moradia: House, Saúde: HeartPulse,
   Lazer: Ticket, Assinaturas: Repeat, Educação: GraduationCap,
 }
+
+/**
+ * Data hues, chart marks only (legend dots, share bars) — never text, never icons. Fixed per category so a
+ * filter never repaints survivors. Six dark-surface steps validated as a set (adjacent CVD ΔE ≥ 8.4 on
+ * #151a21); status green/red stay out so "over" and "on pace" keep their meaning. Others fold to neutral.
+ */
+const CAT_COLORS: Record<string, string> = {
+  Alimentação: '#3987e5', Transporte: '#d95926', Moradia: '#199e70',
+  Saúde: '#c98500', Lazer: '#d55181', Assinaturas: '#9085e9',
+}
+export const NEUTRAL_MARK = '#5b6675'
+export const catColor = (category: string) => CAT_COLORS[category] ?? NEUTRAL_MARK
 
 /** Neutral disc with a grey outline icon; categories are identified by shape, never by hue. */
 export function CategoryIcon({ category, size = 36 }: { category: string; size?: number }) {
@@ -124,5 +137,15 @@ export function Sheet({ open, onClose, title, children }: { open: boolean; onClo
         </div>
       )}
     </dialog>
+  )
+}
+
+/** The eye: masks every money value app-wide; the choice persists on this device. */
+export function HideValuesButton({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" onClick={onToggle} aria-pressed={hidden} aria-label={hidden ? 'Mostrar valores' : 'Ocultar valores'}
+      className="grid size-11 flex-none place-items-center rounded-full border border-line text-muted transition-colors hover:bg-raised hover:text-ink">
+      {hidden ? <EyeOff size={19} /> : <Eye size={19} />}
+    </button>
   )
 }

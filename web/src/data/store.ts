@@ -5,6 +5,7 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { BuffetData } from './types'
 import { seed } from './seed'
+import { setValuesHidden, valuesHidden } from '../lib/format'
 
 export interface DataStore {
   load(): Promise<BuffetData>
@@ -28,7 +29,11 @@ export const localStore: DataStore = {
 
 export const store: DataStore = localStore
 
-type Ctx = { data: BuffetData; update: (fn: (d: BuffetData) => BuffetData) => void }
+type Ctx = {
+  data: BuffetData; update: (fn: (d: BuffetData) => BuffetData) => void
+  /** Values masked ("Ocultar valores"); in the context so every screen re-renders on toggle. */
+  hidden: boolean; toggleHidden: () => void
+}
 const BuffetCtx = createContext<Ctx | null>(null)
 
 export function BuffetProvider({ children }: { children: ReactNode }) {
@@ -37,8 +42,10 @@ export function BuffetProvider({ children }: { children: ReactNode }) {
   const update = useCallback((fn: (d: BuffetData) => BuffetData) => {
     setData((prev) => { if (!prev) return prev; const next = fn(prev); void store.save(next); return next })
   }, [])
+  const [hidden, setHidden] = useState(valuesHidden)
+  const toggleHidden = useCallback(() => setHidden((h) => { setValuesHidden(!h); return !h }), [])
   if (!data) return null
-  return createElement(BuffetCtx.Provider, { value: { data, update } }, children)
+  return createElement(BuffetCtx.Provider, { value: { data, update, hidden, toggleHidden } }, children)
 }
 
 export function useBuffet() {

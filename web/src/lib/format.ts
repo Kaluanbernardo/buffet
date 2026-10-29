@@ -1,8 +1,21 @@
+const HIDE_KEY = 'buffet_hide_values'
+/** "Ocultar valores" (Nubank's eye): read by every money formatter; the store re-renders screens on change. */
+let hidden = (() => { try { return localStorage.getItem(HIDE_KEY) === '1' } catch { return false } })()
+export const valuesHidden = () => hidden
+export const setValuesHidden = (v: boolean) => {
+  hidden = v
+  try { localStorage.setItem(HIDE_KEY, v ? '1' : '0') } catch { /* private mode */ }
+}
+export const MASK = 'R$ ••••'
+
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
-export const money = (v: number) => brl.format(v)
+export const money = (v: number) => (hidden ? MASK : brl.format(v))
 /** Without decimals, for capacity figures in sublines ("de R$ 3.000"). */
 const brl0 = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 })
-export const money0 = (v: number) => brl0.format(v)
+export const money0 = (v: number) => (hidden ? MASK : brl0.format(v))
+/** Compact form for chart labels only ("R$ 1,2 mil"). */
+const brlC = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1 })
+export const moneyCompact = (v: number) => (hidden ? MASK : brlC.format(v))
 export const monthKey = (d: string | Date = new Date()) => (typeof d === 'string' ? d : d.toISOString()).slice(0, 7)
 export const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' })
 export const fmtDate = (iso: string) => iso.split('-').reverse().join('/')
@@ -16,7 +29,7 @@ export const parseMoney = (s: string) => {
   return Number(norm)
 }
 
-const parseISO = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d) }
+export const parseISO = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d) }
 
 /** "Hoje", "Ontem", or "seg., 26 de out." */
 export const dayLabel = (iso: string) => {
@@ -36,3 +49,23 @@ export const monthClock = () => {
 }
 
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+/** "out/26" — short month + 2-digit year, for payoff dates. */
+export const shortMonth = (y: number, m0: number) => {
+  const d = new Date(y, m0, 1)
+  return `${d.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '')}/${String(d.getFullYear()).slice(2)}`
+}
+
+/** "Outubro" or "Outubro de 2025" (year only when not the current one). */
+export const monthName = (mk: string) => {
+  const [y, m] = mk.split('-').map(Number)
+  const s = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: y === Number(today().slice(0, 4)) ? undefined : 'numeric' })
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+/** Month key shifted by n months ("2026-10" + -1 → "2026-09"). */
+export const shiftMonth = (mk: string, n: number) => {
+  const [y, m] = mk.split('-').map(Number)
+  const d = new Date(y, m - 1 + n, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}

@@ -1,32 +1,34 @@
 import { useMemo, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { ChevronLeft, ChevronRight, Plus, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { Transaction } from '../data/types'
-import { dayLabel, money, monthKey, plural, today } from '../lib/format'
-import { CategoryIcon, Empty, ScreenHeader } from '../components/ui'
+import { dayLabel, money, monthKey, monthName, plural, shiftMonth, today } from '../lib/format'
+import { catColor, CategoryIcon, Empty, ScreenHeader } from '../components/ui'
 import { useActions } from '../components/Actions'
 
-const monthName = (mk: string) => {
-  const [y, m] = mk.split('-').map(Number)
-  const s = new Date(y, m - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: y === new Date().getFullYear() ? undefined : 'numeric' })
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
+const norm = (v: string) => v.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
 
 export default function Gastos() {
   const { data, update } = useBuffet()
   const { openNew, notify } = useActions()
   const current = monthKey(today())
-  const months = useMemo(() => {
-    const set = new Set([current, ...data.transactions.map((t) => monthKey(t.date))])
-    return [...set].sort().reverse()
-  }, [data.transactions, current])
+  const first = useMemo(() => data.transactions.reduce((min, t) => (monthKey(t.date) < min ? monthKey(t.date) : min), current), [data.transactions, current])
+  const [params, setParams] = useSearchParams()
+  const cat = params.get('cat')
+  const setCat = (c: string | null) => setParams((p) => { if (c) p.set('cat', c); else p.delete('cat'); return p }, { replace: true })
   const [mk, setMk] = useState(current)
-  const [cat, setCat] = useState<string | null>(null)
+  const [q, setQ] = useState('')
 
   const inMonth = data.transactions.filter((t) => monthKey(t.date) === mk)
-  const usedCats = [...new Set(inMonth.map((t) => t.category))]
-  const list = inMonth.filter((t) => !cat || t.category === cat).sort((a, b) => b.date.localeCompare(a.date))
+  const usedCats = [...new Set(inMonth.map((t) => t.category))].sort((a, b) => data.config.categories.indexOf(a) - data.config.categories.indexOf(b))
+  if (cat && !usedCats.includes(cat)) usedCats.push(cat)
+  const needle = norm(q.trim())
+  const list = inMonth
+    .filter((t) => (!cat || t.category === cat) && (!needle || norm(t.merchant).includes(needle) || norm(t.note ?? '').includes(needle)))
+    .sort((a, b) => b.date.localeCompare(a.date))
   const total = list.reduce((s, t) => s + t.amount, 0)
+  const filtered = Boolean(cat || needle)
 
   const days = new Map<string, Transaction[]>()
   for (const t of list) days.set(t.date, [...(days.get(t.date) ?? []), t])
@@ -44,24 +46,52 @@ export default function Gastos() {
         action={<button className="btn h-11 px-4" onClick={openNew}><Plus size={18} strokeWidth={2.5} />Novo</button>}
       />
 
-      <div className="-mx-4 mb-5 flex gap-2 overflow-x-auto px-4 pb-1" role="group" aria-label="Filtros">
-        {months.length > 1 && (
-          <select aria-label="Mês" className="input h-9 w-auto flex-none rounded-full py-0 pl-3.5 text-sm font-semibold" value={mk} onChange={(e) => { setMk(e.target.value); setCat(null) }}>
-            {months.map((m) => <option key={m} value={m}>{monthName(m)}</option>)}
-          </select>
-        )}
-        {usedCats.length > 1 && [null, ...usedCats].map((c) => (
-          <button key={c ?? 'all'} aria-pressed={cat === c} onClick={() => setCat(c)}
-            className={`h-9 flex-none rounded-full border px-3.5 text-sm font-semibold transition-colors ${cat === c ? 'border-ink bg-ink text-ground' : 'border-control text-muted hover:text-ink'}`}>
-            {c ?? 'Tudo'}
-          </button>
-        ))}
+      <div className="mb-3 flex items-center justify-between gap-2 rounded-full border border-line bg-surface p-1">
+        <button type="button" aria-label="Mês anterior" disabled={mk <= first} onClick={() => setMk(shiftMonth(mk, -1))}
+          className="grid size-10 place-items-center rounded-full text-muted transition-colors hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent">
+          <ChevronLeft size={20} />
+        </button>
+        <p className="text-[15px] font-bold" aria-live="polite">{monthName(mk)}</p>
+        <button type="button" aria-label="Próximo mês" disabled={mk >= current} onClick={() => setMk(shiftMonth(mk, 1))}
+          className="grid size-10 place-items-center rounded-full text-muted transition-colors hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent">
+          <ChevronRight size={20} />
+        </button>
       </div>
 
+      <div className="relative mb-3">
+        <Search size={17} aria-hidden className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-faint" />
+        <input type="search" aria-label="Buscar por estabelecimento" placeholder="Buscar estabelecimento" autoComplete="off"
+          className="input h-11 pr-11 pl-10" value={q} onChange={(e) => setQ(e.target.value)} />
+        {q && (
+          <button type="button" aria-label="Limpar busca" onClick={() => setQ('')}
+            className="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-full text-faint hover:text-ink">
+            <X size={16} />
+          </button>
+        )}
+      </div>
+
+      {usedCats.length > 0 && (
+        <div className="-mx-4 mb-5 flex gap-2 overflow-x-auto px-4 pb-1" role="group" aria-label="Filtrar por categoria">
+          {[null, ...usedCats].map((c) => (
+            <button key={c ?? 'all'} aria-pressed={cat === c} onClick={() => setCat(c)}
+              className={`flex h-9 flex-none items-center gap-2 rounded-full border px-3.5 text-sm font-semibold transition-colors ${cat === c ? 'border-ink bg-ink text-ground' : 'border-control text-muted hover:text-ink'}`}>
+              {c && <span aria-hidden className="size-2 rounded-full" style={{ background: catColor(c) }} />}
+              {c ?? 'Todas'}
+            </button>
+          ))}
+        </div>
+      )}
+
       {list.length === 0 ? (
-        <Empty action={<button className="link" onClick={openNew}>Lançar gasto</button>}>
-          Nenhum gasto em {monthName(mk).toLowerCase()}. Quando lançar, ele aparece aqui agrupado por dia.
-        </Empty>
+        filtered ? (
+          <Empty action={<button className="link" onClick={() => { setQ(''); setCat(null) }}>Limpar filtros</button>}>
+            Nada encontrado em {monthName(mk).toLowerCase()} com esses filtros.
+          </Empty>
+        ) : (
+          <Empty action={<button className="link" onClick={openNew}>Lançar gasto</button>}>
+            Nenhum gasto em {monthName(mk).toLowerCase()}. Quando lançar, ele aparece aqui agrupado por dia.
+          </Empty>
+        )
       ) : (
         <div className="space-y-6">
           {[...days].map(([date, items]) => (

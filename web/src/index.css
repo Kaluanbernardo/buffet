@@ -51,6 +51,7 @@ input, select, textarea { caret-color: var(--color-accent); }
     transition: border-color .15s ease;
   }
   .input::placeholder { color: var(--color-faint); }
+  .input:disabled { color: var(--color-faint); cursor: not-allowed; }
   .input:focus { outline: none; border-color: var(--color-accent); }
   .input[aria-invalid='true'] { border-color: var(--color-negative); }
   select.input { appearance: none; padding-right: 36px;

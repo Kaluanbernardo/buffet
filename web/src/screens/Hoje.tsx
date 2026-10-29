@@ -1,14 +1,16 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
-import { daysUntilDue, dueLabel, isOpen, monthSummary } from '../data/derive'
+import { categoryShare, dailySpend, daysUntilDue, dueLabel, isOpen, monthSummary } from '../data/derive'
 import { dayLabel, money, money0, plural } from '../lib/format'
-import { CategoryIcon, Empty, PlanTrack, ScreenHeader, Section, toneFor } from '../components/ui'
+import { CategoryIcon, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, toneFor } from '../components/ui'
+import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
 
 export default function Hoje() {
-  const { data } = useBuffet()
+  const { data, hidden, toggleHidden } = useBuffet()
   const { openNew } = useActions()
+  const navigate = useNavigate()
   const m = monthSummary(data)
   const { clock } = m
   const hasPlan = m.limit > 0
@@ -31,11 +33,14 @@ export default function Hoje() {
 
   const cats = m.cats.filter((c) => c.limit > 0 || c.spent > 0).sort((a, b) => b.spent / (b.limit || 1) - a.spent / (a.limit || 1))
   const recent = [...data.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 4)
+  const share = categoryShare(m.tx)
+  const daily = dailySpend(data.transactions, 30)
   const dues = data.debts.filter(isOpen).map((d) => ({ ...d, inDays: daysUntilDue(d.due_day) })).sort((a, b) => a.inDays - b.inDays).slice(0, 3)
 
   return (
     <div>
-      <ScreenHeader title="Hoje" sub={<span className="first-letter:uppercase inline-block">{dateLine}</span>} />
+      <ScreenHeader title="Hoje" sub={<span className="first-letter:uppercase inline-block">{dateLine}</span>}
+        action={<HideValuesButton hidden={hidden} onToggle={toggleHidden} />} />
 
       {/* 1 · The month's decision number */}
       <section className="card p-5" aria-labelledby="hero-label">
@@ -72,7 +77,26 @@ export default function Hoje() {
         <button className="btn mt-5 w-full" onClick={openNew}>Novo gasto</button>
       </section>
 
-      {/* 2 · Categories */}
+      {/* 2 · Where the month went */}
+      <Section title={`Para onde foi em ${clock.name}`}>
+        {share.length === 0 ? (
+          <Empty>Os gastos do mês aparecem aqui divididos por categoria.</Empty>
+        ) : (
+          <div className="card p-4">
+            <ShareBar slices={share} label={`Divisão dos gastos de ${clock.name}`}
+              onPick={(c) => navigate(`/gastos?cat=${encodeURIComponent(c)}`)} />
+          </div>
+        )}
+      </Section>
+
+      {/* 3 · Daily rhythm */}
+      <Section title="Últimos 30 dias" action={<span className="money text-sm text-muted">{money(daily.reduce((s, d) => s + d.total, 0))}</span>}>
+        <div className="card p-4">
+          <DailyBars days={daily} allowance={hasPlan ? m.limit / clock.days : undefined} />
+        </div>
+      </Section>
+
+      {/* 4 · Categories */}
       <Section title="Categorias" action={<Link to="/orcamento" className="link">Ajustar</Link>}>
         {cats.length === 0 ? (
           <Empty>Sem gastos nem limites neste mês ainda.</Empty>
@@ -103,7 +127,7 @@ export default function Hoje() {
         )}
       </Section>
 
-      {/* 3 · Recent spending */}
+      {/* 5 · Recent spending */}
       <Section title="Últimos gastos" action={recent.length > 0 && <Link to="/gastos" className="link">Ver todos</Link>}>
         {recent.length === 0 ? (
           <Empty action={<button className="link" onClick={openNew}>Lançar o primeiro gasto</button>}>Nenhum gasto lançado ainda.</Empty>
@@ -123,7 +147,7 @@ export default function Hoje() {
         )}
       </Section>
 
-      {/* 4 · Upcoming dues */}
+      {/* 6 · Upcoming dues */}
       <Section title="Próximos vencimentos" action={<Link to="/dividas" className="link">Dívidas</Link>}>
         {dues.length === 0 ? (
           <Empty>Nenhuma parcela em aberto. Bom sinal.</Empty>

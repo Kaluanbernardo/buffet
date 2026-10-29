@@ -1,15 +1,19 @@
 import { useState } from 'react'
 import { Check } from 'lucide-react'
 import { useBuffet } from '../data/store'
-import { monthSummary } from '../data/derive'
+import { monthSummary, type Slice } from '../data/derive'
 import { money, money0, parseMoney } from '../lib/format'
 import { CategoryIcon, PlanTrack, ScreenHeader, toneFor } from '../components/ui'
+import { ShareBar } from '../components/charts'
 
 export default function Orcamento() {
-  const { data, update } = useBuffet()
+  const { data, update, hidden } = useBuffet()
   const m = monthSummary(data)
   const { clock } = m
   const [saved, setSaved] = useState<string | null>(null)
+
+  // How the plan is split: limit per category as a share of the month's total (largest first).
+  const plan: Slice[] = m.budgeted.map((c) => ({ key: c.category, value: c.limit, share: c.limit / m.limit })).sort((a, b) => b.value - a.value)
 
   const set = (category: string, v: string) => {
     const n = parseMoney(v)
@@ -30,6 +34,16 @@ export default function Orcamento() {
           : 'Defina um limite mensal por categoria. Categorias sem limite ficam de fora do plano.'}
       />
 
+      {plan.length > 0 && (
+        <section className="card mb-6 p-4" aria-labelledby="plan-split">
+          <div className="mb-3 flex items-baseline justify-between gap-3">
+            <h2 id="plan-split" className="text-sm font-semibold text-muted">Divisão do plano</h2>
+            <span className="money text-sm font-semibold">{money0(m.limit)}/mês</span>
+          </div>
+          <ShareBar slices={plan} label="Divisão do plano mensal por categoria" />
+        </section>
+      )}
+
       <div className="mb-3 flex items-center gap-2 px-1 text-xs text-faint">
         <span aria-hidden className="inline-block h-3 w-[2px] rounded-full bg-ink/80" />
         Marca de hoje: dia {clock.day} de {clock.days}. Barra além dela = gastando acima do ritmo.
@@ -40,7 +54,7 @@ export default function Orcamento() {
           const t = toneFor(c.spent, c.limit, clock.elapsed)
           const id = `lim-${c.category}`
           return (
-            <li key={c.category} className="py-4">
+            <li key={`${c.category}-${hidden}`} className="py-4">
               <div className="flex items-center gap-3">
                 <CategoryIcon category={c.category} />
                 <div className="min-w-0 flex-1">
@@ -54,9 +68,9 @@ export default function Orcamento() {
                 <div className="relative w-[7.5rem] flex-none">
                   <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm text-faint">R$</span>
                   <input
-                    id={id} inputMode="decimal" placeholder="0" autoComplete="off"
+                    id={id} inputMode="decimal" placeholder={hidden ? '••••' : '0'} autoComplete="off" disabled={hidden}
                     className="input money h-10 pl-9 text-right text-[15px] font-semibold"
-                    defaultValue={c.limit ? c.limit.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : ''}
+                    defaultValue={hidden ? '' : c.limit ? c.limit.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : ''}
                     onBlur={(e) => set(c.category, e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
                   />
@@ -66,8 +80,9 @@ export default function Orcamento() {
                 </div>
               </div>
               {c.limit > 0 && (
-                <div className="mt-3 pl-12">
-                  <PlanTrack spent={c.spent} limit={c.limit} elapsed={clock.elapsed} tone={t} label={c.category} />
+                <div className="mt-3 flex items-center gap-3 pl-12">
+                  <div className="flex-1"><PlanTrack spent={c.spent} limit={c.limit} elapsed={clock.elapsed} tone={t} label={c.category} /></div>
+                  <span className="money flex-none text-xs text-faint">{Math.round((c.limit / m.limit) * 100)}% do plano</span>
                 </div>
               )}
             </li>

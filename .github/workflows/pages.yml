@@ -16,9 +16,9 @@ jobs:
       - run: npm run build && cp dist/index.html dist/404.html && touch dist/.nojekyll
         env:
           VITE_APP_PASSWORD_HASH: ${{ secrets.VITE_APP_PASSWORD_HASH }}
-          # F1 (Supabase): descomentar quando os secrets existirem
-          # VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          # VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # Com os dois secrets abaixo o app usa Supabase Auth + dados no Supabase; sem eles, volta ao gate de senha + localStorage.
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
       - uses: actions/upload-pages-artifact@v3
         with: {path: web/dist}
   deploy:

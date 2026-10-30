@@ -5,27 +5,51 @@ PWA pessoal de finanças (pt-BR, BRL). Publicado em **https://kaluanbernardo.git
 ## Rodar local
 ```bash
 cd web
-cp .env.example .env.local   # preencha VITE_APP_PASSWORD_HASH
+cp .env.example .env.local   # VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (os mesmos do fitness)
 npm install
 npm run dev                  # http://localhost:5173/buffet/
 ```
-Gerar o hash da senha (não commitar):
+Com `VITE_SUPABASE_*` o login é o mesmo e-mail/senha do app de treino (Supabase Auth) e os dados vêm do banco.
+Sem eles, o app cai no gate de senha antigo (`VITE_APP_PASSWORD_HASH`, SHA-256 hex) com dados só no aparelho:
 ```bash
 printf '%s' 'minha-senha' | sha256sum | cut -d' ' -f1
 ```
 
 ## Deploy (GitHub Pages)
 1. Settings → Pages → Source: **GitHub Actions**.
-2. Settings → Secrets → Actions: `VITE_APP_PASSWORD_HASH` = hash SHA-256 hex.
+2. Settings → Secrets → Actions: `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` (mesmos valores do fitness; só a anon key, **nunca** a service role).
+   Sem eles o build usa `VITE_APP_PASSWORD_HASH` (fallback).
 3. Push em `main` → workflow `.github/workflows/pages.yml` publica `web/dist`.
+
+No primeiro login com Supabase, se a conta ainda não tem `buffet_app_config`, os dados que estavam no `localStorage`
+daquele aparelho são enviados uma vez (lançamentos com id novo, dívidas, reservas, orçamento, renda).
+
+## Chat → banco → PWA (`scripts/buffet`)
+O assistente lança gastos direto no Supabase, como o `fit` do fitness: `scripts/buffet` roda cada comando pela
+Management API em `begin; set local role bot; …; commit;` (RLS + grants do role `bot`, `source='bot'`,
+`user_id` = dono via `public.buffet_owner()`). O app recarrega os dados ao voltar para o primeiro plano.
+```bash
+scripts/buffet expense 107,56 --merchant Bar --category Lazer [--date ontem] [--bank Nubank] [--note "..."]
+scripts/buffet list                      # mês atual; --date 29/10 ou --month 2026-10
+scripts/buffet del <id>                  # desfaz um lançamento errado
+scripts/buffet import-jsonl data/expenses.jsonl   # idempotente pelo id
+scripts/buffet sql "select category, sum(amount) from buffet_transactions group by 1"
+```
+Quando o Kaluan disser no chat "gastei 32 no mercado no Nubank", o assistente roda `buffet expense 32 --merchant Mercado
+--category Alimentação --bank Nubank` e confirma com o id/total de `buffet list`. Token:
+`$SUPABASE_ACCESS_TOKEN` ou `/home/box/.secrets/supabase_access_token` (nunca impresso). `BUFFET_ROLLBACK=1` testa sem gravar.
+
+## Migrations
+`supabase/migrations/*.sql` → `scripts/apply_migrations_https.py [--dry-run]` (Management API; registra em
+`public._buffet_migrations`, separado do `_migrations` do fitness porque as versions colidem no mesmo projeto).
+Segurança igual ao fitness: `owner_all` (authenticated + `is_owner()`), `bot_all` (role `bot`), anon sem acesso.
 
 ## Instalar no Android
 Abra a URL no Chrome → menu ⋮ → **Instalar app** (ou "Adicionar à tela inicial").
 
 ## Arquitetura
-- `web/src/lib/auth.ts` — `AuthAdapter`. F0: senha (SHA-256 vs `VITE_APP_PASSWORD_HASH`, sessão em `sessionStorage`). F1: Supabase Auth.
-- `web/src/data/store.ts` — `DataStore`. F0: `localStorage`. F1: Supabase (mesmo projeto do fitness).
-- `supabase/migrations/` — rascunho das tabelas `public.buffet_*` com RLS por `auth.uid()` (**não aplicado**).
+- `web/src/lib/auth.ts` — `AuthAdapter`: Supabase Auth quando há `VITE_SUPABASE_*`; senão gate de senha (`sessionStorage`).
+- `web/src/data/store.ts` — `DataStore`: `supabaseStore` (tabelas `public.buffet_*`; `save` só grava o que mudou,
+  `source='app'`) ou `localStore` (F0).
+- `supabase/migrations/` — tabelas `public.buffet_*` aplicadas no projeto do fitness (`qlphmxjehsexuxspspaw`).
 - Ícones: `npm run icons` (Python + Pillow) gera `web/public/icons/*.png`.
-
-> A senha atual é um gate temporário só no cliente — não é segurança real. Os dados ficam no aparelho até a F1.

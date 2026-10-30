@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""buffet — CLI do assistente para as finanças do Kaluan (tabelas public.buffet_* no Supabase do fitness),
+por HTTPS, executando como role `bot` (mesmo modelo de fitness/app/scripts/fit).
+
+Cada comando roda `begin; set local role bot; <um comando SQL>; commit;` pela Management API:
+RLS e grants mínimos do bot valem. Toda escrita leva source='bot'; user_id cai no owner (public.buffet_owner()).
+Datas: AAAA-MM-DD, 'hoje', 'ontem' ou dd/mm. Valores: 107.56 ou 107,56.
+
+GASTOS
+  buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t]
+        lança um gasto (padrão: hoje); imprime o id
+  buffet del <id>                             apaga um lançamento
+  buffet list [--date d | --month AAAA-MM]    lançamentos (padrão: mês atual) + total
+  buffet import-jsonl <arquivo>               importa data/expenses.jsonl (idempotente pelo id)
+
+SQL
+  buffet sql "<SELECT ...>"                   SQL livre como bot (um comando)
+  buffet admin-sql "<SQL>"                    como postgres (evitar; só manutenção)
+
+Token: $SUPABASE_ACCESS_TOKEN ou /home/box/.secrets/supabase_access_token (nunca impresso).
+BUFFET_ROLLBACK=1 executa cada comando e desfaz (teste sem gravar).
+"""
+import datetime as dt, json, os, re, sys, urllib.error, urllib.request
+from zoneinfo import ZoneInfo
+
+REF = os.environ.get("SUPABASE_PROJECT_REF", "qlphmxjehsexuxspspaw")
+TOKEN_FILE = "/home/box/.secrets/supabase_access_token"
+TZ = ZoneInfo("America/Sao_Paulo")
+CATEGORIES = ("Alimentação", "Transporte", "Moradia", "Saúde", "Lazer", "Assinaturas", "Educação", "Outros")
+
+
+# ---------------------------------------------------------------- transporte
+def token():
+    t = os.environ.get("SUPABASE_ACCESS_TOKEN")
+    if not t and os.path.exists(TOKEN_FILE):
+        t = open(TOKEN_FILE).read().strip()
+    if not t:
+        sys.exit("erro: SUPABASE_ACCESS_TOKEN ausente")
+    return t
+
+
+def run(query):
+    req = urllib.request.Request(f"https://api.supabase.com/v1/projects/{REF}/database/query",
+        data=json.dumps({"query": query}).encode(), method="POST",
+        headers={"Authorization": "Bearer " + token(), "Content-Type": "application/json", "User-Agent": "buffet-cli"})
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=120))
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("message", "")
+        except Exception:
+            msg = str(e)
+        sys.exit(f"erro {e.code}: {msg}")
+
+
+# Bloqueia tentativas de sair do role bot dentro da mesma requisição.
+ESCAPE = re.compile(r"\b(role|session_authorization|commit|rollback|begin|abort|savepoint|release|prepare|reset|set_config)\b", re.I)
+
+
+def bot(query):
+    bare = re.sub(r"'(?:[^']|'')*'", "''", query)
+    if ESCAPE.search(bare):
+        sys.exit("erro: SQL do bot não pode conter controle de transação/role (begin/commit/set/reset/role...)")
+    q = query.strip().rstrip(";").strip()
+    bare = re.sub(r"'(?:[^']|'')*'", "''", q)
+    if ";" in bare or "$" in bare or "--" in bare or "/*" in bare:
+        sys.exit("erro: o bot executa um único comando por chamada (sem ';', '$', comentários)")
+    end = "rollback;" if os.environ.get("BUFFET_ROLLBACK") else "commit;"   # BUFFET_ROLLBACK=1: testa sem gravar
+    return run(f"begin; set local role bot; set local statement_timeout = '30s';\n{q};\n{end}")
+
+
+def lit(v):
+    return "null" if v is None else "'" + str(v).replace("'", "''") + "'"
+
+
+def show(rows):
+    print(json.dumps(rows, ensure_ascii=False, indent=1, default=str))
+
+
+def table(rows, cols=None):
+    if not rows:
+        print("(nada)")
+        return
+    cols = cols or list(rows[0].keys())
+    w = {c: max(len(c), *(len(fmt(r.get(c))) for r in rows)) for c in cols}
+    print("  ".join(c.ljust(w[c]) for c in cols))
+    for r in rows:
+        print("  ".join(fmt(r.get(c)).ljust(w[c]) for c in cols))
+
+
+def fmt(v):
+    if v is None:
+        return "–"
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
+# ---------------------------------------------------------------- argumentos
+def opts(args, flags=(), bools=()):
+    """Separa posicionais de --flag valor / --bool."""
+    pos, o = [], {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--") and a[2:] in bools:
+            o[a[2:]] = True
+        elif a.startswith("--") and a[2:] in flags:
+            if i + 1 >= len(args):
+                sys.exit(f"erro: {a} precisa de valor")
+            o[a[2:]] = args[i + 1]
+            i += 1
+        elif a.startswith("--"):
+            sys.exit(f"erro: opção desconhecida {a}")
+        else:
+            pos.append(a)
+        i += 1
+    return pos, o
+
+
+def today():
+    return dt.datetime.now(TZ).date()
+
+
+def pdate(s):
+    if s is None or s in ("hoje", "today"):
+        return today().isoformat()
+    if s in ("ontem", "yesterday"):
+        return (today() - dt.timedelta(days=1)).isoformat()
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})(?:/(\d{4}))?", s)
+    if m:
+        y = int(m.group(3) or today().year)
+        return dt.date(y, int(m.group(2)), int(m.group(1))).isoformat()
+    try:
+        return dt.date.fromisoformat(s).isoformat()
+    except ValueError:
+        sys.exit(f"erro: data inválida '{s}' (use AAAA-MM-DD, dd/mm, hoje, ontem)")
+
+
+def pmoney(s):
+    t = str(s).strip().replace("R$", "").strip()
+    if "," in t:                       # pt-BR: 1.234,56
+        t = t.replace(".", "").replace(",", ".")
+    try:
+        v = round(float(t), 2)
+    except ValueError:
+        sys.exit(f"erro: valor inválido '{s}'")
+    if v <= 0:
+        sys.exit("erro: valor precisa ser > 0")
+    return v
+
+
+def pcategory(s):
+    """Categoria sem diferenciar maiúsculas/acentos das padrão; outra qualquer passa como veio."""
+    norm = lambda x: x.lower().translate(str.maketrans("áàâãéêíóôõúç", "aaaaeeiooouc"))
+    for c in CATEGORIES:
+        if norm(c) == norm(s):
+            return c
+    print(f"aviso: categoria '{s}' fora das padrão ({', '.join(CATEGORIES)})", file=sys.stderr)
+    return s
+
+
+# ---------------------------------------------------------------- comandos
+TX_COLS = "id, date, amount, merchant, category, bank, note, source"
+
+
+def cmd_expense(a):
+    pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note"))
+    if len(pos) != 1 or not o.get("merchant") or not o.get("category"):
+        sys.exit("uso: buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t]")
+    rows = bot(
+        "insert into public.buffet_transactions (date, amount, merchant, category, bank, note, source) values ("
+        f"{lit(pdate(o.get('date')))}, {pmoney(pos[0])}, {lit(o['merchant'])}, {lit(pcategory(o['category']))}, "
+        f"{lit(o.get('bank'))}, {lit(o.get('note'))}, 'bot') returning {TX_COLS}")
+    table(rows)
+
+
+def cmd_del(a):
+    if len(a) != 1:
+        sys.exit("uso: buffet del <id>")
+    rows = bot(f"delete from public.buffet_transactions where id = {lit(a[0])} returning {TX_COLS}")
+    if not rows:
+        sys.exit(f"erro: lançamento {a[0]} não encontrado")
+    table(rows)
+
+
+def cmd_list(a):
+    _, o = opts(a, flags=("date", "month"))
+    if o.get("date") and o.get("month"):
+        sys.exit("erro: use --date ou --month, não os dois")
+    if o.get("date"):
+        where = f"date = {lit(pdate(o['date']))}"
+    else:
+        m = o.get("month") or today().strftime("%Y-%m")
+        if not re.fullmatch(r"\d{4}-\d{2}", m):
+            sys.exit("erro: --month no formato AAAA-MM")
+        where = f"to_char(date, 'YYYY-MM') = {lit(m)}"
+    rows = bot(f"select {TX_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
+    table(rows)
+    if rows:
+        total = sum(float(r["amount"]) for r in rows)
+        print(f"\n{len(rows)} lançamento(s) · total R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+
+def cmd_import_jsonl(a):
+    if len(a) != 1:
+        sys.exit("uso: buffet import-jsonl <arquivo>")
+    values = []
+    for n, line in enumerate(open(a[0], encoding="utf-8"), 1):
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+            values.append(f"({lit(e.get('id'))}, {lit(pdate(e['date']))}, {pmoney(e['amount'])}, {lit(e['merchant'])}, "
+                          f"{lit(pcategory(e['category']))}, {lit(e.get('bank'))}, {lit(e.get('note'))}, 'bot')")
+        except (KeyError, json.JSONDecodeError) as err:
+            sys.exit(f"erro: linha {n} inválida ({err})")
+    if not values:
+        print("(arquivo vazio)")
+        return
+    # id ausente vira uuid (coalesce); id repetido é ignorado, então reimportar não duplica.
+    rows = bot("insert into public.buffet_transactions (id, date, amount, merchant, category, bank, note, source) "
+               "select coalesce(v.id, gen_random_uuid()::text), v.date::date, v.amount, v.merchant, v.category, v.bank, v.note, v.source "
+               f"from (values {', '.join(values)}) as v (id, date, amount, merchant, category, bank, note, source) "
+               f"on conflict (id) do nothing returning {TX_COLS}")
+    table(rows)
+    print(f"\nimportados: {len(rows)} · já existiam: {len(values) - len(rows)}")
+
+
+COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-jsonl": cmd_import_jsonl}
+
+
+def main(a):
+    if not a or a[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    c, rest = a[0], a[1:]
+    if c == "sql" and len(rest) == 1:
+        show(bot(rest[0]))
+    elif c == "admin-sql" and len(rest) == 1:
+        show(run(rest[0]))
+    elif c in COMMANDS:
+        COMMANDS[c](rest)
+    else:
+        print(__doc__)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

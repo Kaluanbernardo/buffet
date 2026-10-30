@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { HashRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { House, ReceiptText, PiggyBank, CalendarClock, Ellipsis } from 'lucide-react'
 import { auth } from './lib/auth'
-import { BuffetProvider } from './data/store'
+import { BuffetProvider, useBuffet } from './data/store'
 import { ActionsProvider } from './components/Actions'
 import { BrandMark } from './components/ui'
 import Login from './screens/Login'
@@ -32,6 +32,16 @@ function NotConfigured() {
   )
 }
 
+function SyncBanner() {
+  const { syncError } = useBuffet()
+  if (!syncError) return null
+  return (
+    <p role="alert" className="fixed inset-x-0 top-0 z-40 bg-negative px-4 pt-[calc(env(safe-area-inset-top)+8px)] pb-2 text-center text-[13px] font-semibold text-white">
+      Não sincronizou: {syncError}. A mudança aparece aqui, mas pode não ter sido salva.
+    </p>
+  )
+}
+
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null)
   useEffect(() => { auth.isAuthed().then(setAuthed) }, [])
@@ -43,6 +53,7 @@ export default function App() {
     <HashRouter>
       <BuffetProvider>
         <ActionsProvider>
+          <SyncBanner />
           <main className="mx-auto max-w-lg px-4 pt-[calc(env(safe-area-inset-top)+20px)] pb-[calc(env(safe-area-inset-bottom)+104px)]">
             <Routes>
               <Route path="/" element={<Hoje />} />

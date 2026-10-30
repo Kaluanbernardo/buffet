@@ -4,7 +4,7 @@ import { useTheme, type ThemePref } from '../lib/theme'
 import { useBuffet } from '../data/store'
 import { money, money0, monthKey, monthName, parseMoney, plural, today } from '../lib/format'
 import { download, monthCsv } from '../lib/csv'
-import { BrandMark, Empty, ScreenHeader, Section } from '../components/ui'
+import { BrandMark, Columns, Empty, ScreenHeader, Section } from '../components/ui'
 import { useActions } from '../components/Actions'
 import type { Reserve } from '../data/types'
 
@@ -47,6 +47,7 @@ export default function Mais({ onLogout }: { onLogout: () => void }) {
     <div>
       <ScreenHeader title="Mais" sub="Reserva, investimentos e contas" />
 
+      <Columns main={<>
       <section className="card grid grid-cols-2 divide-x divide-rule">
         <div className="p-4">
           <p className="text-sm font-semibold text-muted">Guardado</p>
@@ -114,6 +115,7 @@ export default function Mais({ onLogout }: { onLogout: () => void }) {
         )}
       </Section>
 
+      </>} side={<>
       <Section title="Contas">
         <ul className="card divide-y divide-rule px-4">
           {data.config.banks.map((b) => (
@@ -191,6 +193,7 @@ export default function Mais({ onLogout }: { onLogout: () => void }) {
           <span className="text-xs font-semibold">Buffet · v0.2</span>
         </div>
       </section>
+      </>} />
     </div>
   )
 }

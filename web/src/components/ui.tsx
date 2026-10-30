@@ -46,13 +46,24 @@ export function BrandMark({ size = 28, className = '' }: { size?: number; classN
 
 export function ScreenHeader({ title, sub, action }: { title: string; sub?: ReactNode; action?: ReactNode }) {
   return (
-    <header className="mb-5 flex items-end justify-between gap-3">
+    <header className="mb-5 flex items-end justify-between gap-3 md:mb-7">
       <div className="min-w-0">
-        <h1 className="text-[26px] leading-tight font-bold tracking-[-0.02em]">{title}</h1>
+        <h1 className="text-[26px] leading-tight font-bold tracking-[-0.02em] md:text-[30px]">{title}</h1>
         {sub && <p className="mt-1 text-sm text-muted">{sub}</p>}
       </div>
       {action}
     </header>
+  )
+}
+
+/** Desktop split: two top-aligned columns from 1024px; each column's first block drops its top margin. */
+export function Columns({ main, side, template = 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]' }: { main: ReactNode; side: ReactNode; template?: string }) {
+  const col = 'min-w-0 lg:[&>:first-child]:mt-0'
+  return (
+    <div className={`lg:grid lg:items-start lg:gap-8 ${template}`}>
+      <div className={col}>{main}</div>
+      <div className={col}>{side}</div>
+    </div>
   )
 }
 
@@ -127,8 +138,8 @@ export function Sheet({ open, onClose, title, children }: { open: boolean; onClo
       onClick={(e) => { if (e.target === ref.current) onClose() }}
     >
       {open && (
-        <div className="px-5 pt-3 pb-[calc(env(safe-area-inset-bottom)+20px)]">
-          <div aria-hidden className="mx-auto mb-3 h-1 w-10 rounded-full bg-control" />
+        <div className="px-5 pt-3 pb-[calc(env(safe-area-inset-bottom)+20px)] md:px-6 md:pt-5 md:pb-6">
+          <div aria-hidden className="sheet-grip mx-auto mb-3 h-1 w-10 rounded-full bg-control" />
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-xl font-bold tracking-[-0.01em]">{title}</h2>
             <button type="button" onClick={onClose} aria-label="Fechar" className="grid size-10 place-items-center rounded-full text-muted hover:bg-raised">

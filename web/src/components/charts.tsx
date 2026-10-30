@@ -66,7 +66,7 @@ export function Donut({ slices, label, caption, onPick }: { slices: Slice[]; lab
   const cur = slices.find((s) => s.key === hot)
   let at = 0
   return (
-    <div className="flex flex-col items-center gap-4 sm:flex-row">
+    <div className="@container"><div className="flex flex-col items-center gap-4 @md:flex-row">
       <div className="relative grid flex-none place-items-center" style={{ width: size, height: size }} role="img"
         aria-label={`${label}: ${slices.map((s) => `${s.key} ${pct(s.share)}`).join(', ')}`}>
         <svg width={size} height={size} className="-rotate-90" aria-hidden>
@@ -87,8 +87,8 @@ export function Donut({ slices, label, caption, onPick }: { slices: Slice[]; lab
           <span className="mt-0.5 truncate text-[11px] text-faint">{cur ? cur.key : caption}</span>
         </div>
       </div>
-      <Legend slices={slices} hot={hot} setHot={setHot} onPick={onPick} className="w-full min-w-0 sm:flex-1" />
-    </div>
+      <Legend slices={slices} hot={hot} setHot={setHot} onPick={onPick} className="w-full min-w-0 @md:flex-1" />
+    </div></div>
   )
 }
 

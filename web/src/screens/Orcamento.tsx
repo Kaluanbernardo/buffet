@@ -5,7 +5,7 @@ import { useBuffet } from '../data/store'
 import { GROUPS, monthSummary, type Slice } from '../data/derive'
 import type { BudgetGroup } from '../data/types'
 import { money, money0, monthKey, monthName, parseMoney, shiftMonth, today } from '../lib/format'
-import { AvailablePill, CategoryIcon, PeriodSwitcher, PlanTrack, ScreenHeader, Sheet, toneFor } from '../components/ui'
+import { AvailablePill, CategoryIcon, Columns, PeriodSwitcher, PlanTrack, ScreenHeader, Sheet, toneFor } from '../components/ui'
 import { ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
 
@@ -70,6 +70,7 @@ export default function Orcamento() {
           : 'Dê um trabalho a cada real: informe a renda e distribua entre as categorias.'}
       />
 
+      <Columns template="lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]" main={<div className="lg:sticky lg:top-9">
       <PeriodSwitcher label={monthName(mk)} prevDisabled={mk <= first} nextDisabled={mk >= current}
         onPrev={() => setMk(shiftMonth(mk, -1))} onNext={() => setMk(shiftMonth(mk, 1))} className="mb-4" />
 
@@ -85,6 +86,14 @@ export default function Orcamento() {
         </section>
       )}
 
+      {m.orphan > 0 && (
+        <p className="money mt-4 rounded-2xl border border-dashed border-control px-4 py-3 text-sm text-muted">
+          Sem orçamento · <span className="font-semibold text-warning">{money(m.orphan)}</span> em categorias que não estão mais na lista.
+        </p>
+      )}
+
+      <p className="mt-4 px-1 text-xs text-faint">Escolha uma categoria para atribuir. Os limites valem para todo mês; a renda é de cada mês.</p>
+      </div>} side={<>
       {clock.current && (
         <div className="mt-6 mb-1 flex items-center gap-2 px-1 text-xs text-faint">
           <span aria-hidden className="inline-block h-3 w-[2px] rounded-full bg-ink/80" />
@@ -120,14 +129,7 @@ export default function Orcamento() {
           </section>
         )
       })}
-
-      {m.orphan > 0 && (
-        <p className="money mt-4 rounded-2xl border border-dashed border-control px-4 py-3 text-sm text-muted">
-          Sem orçamento · <span className="font-semibold text-warning">{money(m.orphan)}</span> em categorias que não estão mais na lista.
-        </p>
-      )}
-
-      <p className="mt-4 px-1 text-xs text-faint">Toque numa categoria para atribuir. Os limites valem para todo mês; a renda é de cada mês.</p>
+      </>} />
 
       <Sheet open={cat !== null} onClose={() => setEditing(null)} title={cat ? `Atribuir · ${cat.category}` : 'Atribuir'}>
         {cat && (hidden
@@ -209,7 +211,7 @@ function CategoryRow({ c, elapsed, share, tone, onOpen }: { c: Cat; elapsed?: nu
           <div className="min-w-0 flex-1">
             <p className="truncate font-semibold">{c.category}</p>
             <p className="money truncate text-[13px] text-faint">
-              {c.limit > 0 ? <>{money(c.spent)} de {money0(c.limit)}</> : 'Toque para definir um limite'}
+              {c.limit > 0 ? <>{money(c.spent)} de {money0(c.limit)}</> : 'Definir limite'}
             </p>
           </div>
           <AvailablePill left={c.left} limit={c.limit} spent={c.spent} tone={tone} />

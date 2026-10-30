@@ -32,7 +32,7 @@ export function ActionsProvider({ children }: { children: ReactNode }) {
       <Sheet open={open} onClose={() => setOpen(false)} title="Novo gasto">
         <NewExpenseForm onDone={(msg, undo) => { setOpen(false); notify({ msg, undo }) }} />
       </Sheet>
-      <div aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+84px)] z-40 flex justify-center px-4">
+      <div aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+84px)] z-40 flex justify-center px-4 md:bottom-6 md:left-(--rail)">
         {toast && (
           <div key={toast.id} className="toast pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-2xl border border-line bg-raised px-4 py-3 shadow-(--lift)">
             <p className="flex-1 text-sm">{toast.msg}</p>

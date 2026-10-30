@@ -56,6 +56,11 @@
   --lift: 0 6px 20px rgba(19, 23, 29, .12);
 }
 
+/* Side rail width: none on phones (bottom bar), compact icon rail on tablets, labelled sidebar on desktop. */
+:root { --rail: 0px; }
+@media (min-width: 768px) { :root { --rail: 96px; } }
+@media (min-width: 1024px) { :root { --rail: 248px; } }
+
 html, body, #root { background: var(--color-ground); color: var(--color-ink); min-height: 100%; }
 html { color-scheme: dark; -webkit-text-size-adjust: 100%; }
 html[data-theme='light'] { color-scheme: light; }
@@ -130,6 +135,17 @@ dialog.sheet::backdrop { background: var(--scrim); }
 dialog.sheet[open] { animation: sheet-in .38s cubic-bezier(.16, 1, .3, 1); }
 dialog.sheet[open]::backdrop { animation: fade-in .25s ease-out; }
 @keyframes sheet-in { from { transform: translateY(40%); opacity: .4; } }
+
+/* From 768px there is no thumb zone to serve: the sheet becomes a centred dialog over the content column. */
+@media (min-width: 768px) {
+  dialog.sheet {
+    margin: auto; translate: calc(var(--rail) / 2) 0; max-width: 30rem; max-height: min(88dvh, 52rem);
+    border-bottom: 1px solid var(--color-line); border-radius: 24px; box-shadow: var(--lift);
+  }
+  dialog.sheet[open] { animation: dialog-in .32s cubic-bezier(.16, 1, .3, 1); }
+  dialog.sheet .sheet-grip { display: none; }
+}
+@keyframes dialog-in { from { transform: translateY(16px) scale(.98); opacity: 0; } }
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes toast-in { from { transform: translateY(12px); opacity: 0; } }
 .toast { animation: toast-in .3s cubic-bezier(.16, 1, .3, 1); }

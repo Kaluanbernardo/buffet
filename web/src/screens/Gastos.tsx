@@ -5,7 +5,7 @@ import { useBuffet } from '../data/store'
 import type { CardPayment, Transaction } from '../data/types'
 import { categoryShare, monthDays, monthSummary, weekDays } from '../data/derive'
 import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
-import { catColor, CategoryIcon, Empty, PeriodSwitcher, ScreenHeader, Segmented } from '../components/ui'
+import { catColor, CategoryIcon, Columns, Empty, PeriodSwitcher, ScreenHeader, Segmented } from '../components/ui'
 import { DailyBars, Donut, WeekBars } from '../components/charts'
 import { useActions } from '../components/Actions'
 
@@ -73,9 +73,10 @@ export default function Gastos() {
       <ScreenHeader
         title="Gastos"
         sub={<span className="money">{plural(list.length, 'lançamento', 'lançamentos')} · <span className="text-ink font-semibold">{money(total)}</span></span>}
-        action={<button className="btn h-11 px-4" onClick={openNew}><Plus size={18} strokeWidth={2.5} />Novo</button>}
+        action={<button className="btn h-11 px-4 md:hidden" onClick={openNew}><Plus size={18} strokeWidth={2.5} />Novo</button>}
       />
 
+      <Columns template="lg:grid-cols-[minmax(0,25rem)_minmax(0,1fr)]" main={<>
       <Segmented value={view} options={VIEWS} onChange={setView} label="Agrupar gastos por" />
       <div className="mt-3">
         {view === 'semana' ? (
@@ -99,7 +100,7 @@ export default function Gastos() {
       </div>
 
       {usedCats.length > 0 && (
-        <div className="-mx-4 mb-5 flex gap-2 overflow-x-auto px-4 pb-1" role="group" aria-label="Filtrar por categoria">
+        <div className="-mx-4 mb-5 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0" role="group" aria-label="Filtrar por categoria">
           {[null, ...usedCats].map((c) => (
             <button key={c ?? 'all'} aria-pressed={cat === c} onClick={() => setCat(c)}
               className={`flex h-9 flex-none items-center gap-2 rounded-full border px-3.5 text-sm font-semibold transition-colors ${cat === c ? 'border-ink bg-ink text-ground' : 'border-control text-muted hover:text-ink'}`}>
@@ -113,6 +114,7 @@ export default function Gastos() {
       {view === 'dia' && <DayStrip key={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
       {view === 'semana' && <WeekPanel key={wk} start={wk} tx={data.transactions.filter(matches)} />}
       {view === 'mes' && <MonthPanel key={mk} mk={mk} tx={shown} onPick={(c) => setCat(c === cat ? null : c)} />}
+      </>} side={<>
 
       {list.length === 0 && bills.length === 0 ? (
         filtered ? (
@@ -156,6 +158,7 @@ export default function Gastos() {
           ))}
         </div>
       )}
+      </>} />
     </div>
   )
 }
@@ -182,7 +185,7 @@ function DayStrip({ days, value, onChange }: { days: { date: string; day: number
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => { ref.current?.querySelector<HTMLElement>('[aria-checked="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest' }) }, [])
   return (
-    <div ref={ref} role="radiogroup" aria-label="Escolher dia" className="-mx-4 mb-5 flex gap-1.5 overflow-x-auto px-4 pb-1">
+    <div ref={ref} role="radiogroup" aria-label="Escolher dia" className="-mx-4 mb-5 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:px-0">
       {days.map((d) => {
         const on = d.date === value
         const future = d.date > t

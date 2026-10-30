@@ -3,7 +3,7 @@ import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import { categoryShare, dailySpend, daysUntilDue, dueLabel, isOpen, monthSummary } from '../data/derive'
 import { dayLabel, money, money0, monthKey, plural } from '../lib/format'
-import { CategoryIcon, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, ThemeButton, toneFor } from '../components/ui'
+import { CategoryIcon, Columns, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, ThemeButton, toneFor } from '../components/ui'
 import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
 
@@ -41,8 +41,9 @@ export default function Hoje() {
   return (
     <div>
       <ScreenHeader title="Hoje" sub={<span className="first-letter:uppercase inline-block">{dateLine}</span>}
-        action={<div className="flex gap-2"><ThemeButton /><HideValuesButton hidden={hidden} onToggle={toggleHidden} /></div>} />
+        action={<div className="flex gap-2 md:hidden"><ThemeButton /><HideValuesButton hidden={hidden} onToggle={toggleHidden} /></div>} />
 
+      <Columns template="lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]" main={<>
       {/* 1 · The month's decision number */}
       <section className="card p-5" aria-labelledby="hero-label">
         <p id="hero-label" className="text-sm font-semibold text-muted">
@@ -78,7 +79,8 @@ export default function Hoje() {
         {billsPaid > 0 && (
           <p className="money mt-4 text-[13px] text-faint">Faturas pagas em {clock.name}: {money(billsPaid)} · fora dos gastos</p>
         )}
-        <button className="btn mt-5 w-full" onClick={openNew}>Novo gasto</button>
+        {/* From 768px the side rail carries "Novo gasto" on every screen. */}
+        <button className="btn mt-5 w-full md:hidden" onClick={openNew}>Novo gasto</button>
       </section>
 
       {/* Cash on hand (buffet_app_config.cash_balance) */}
@@ -106,6 +108,7 @@ export default function Hoje() {
         </div>
       </Section>
 
+      </>} side={<>
       {/* 4 · Categories */}
       <Section title="Categorias" action={<Link to="/orcamento" className="link">Ajustar</Link>}>
         {cats.length === 0 ? (
@@ -181,6 +184,7 @@ export default function Hoje() {
           </ul>
         )}
       </Section>
+      </>} />
     </div>
   )
 }

@@ -1,7 +1,7 @@
 import { useBuffet } from '../data/store'
 import { daysUntilDue, dueLabel, isOpen, payoff } from '../data/derive'
 import { money, plural, shortMonth } from '../lib/format'
-import { Empty, ScreenHeader, Section } from '../components/ui'
+import { Columns, Empty, ScreenHeader, Section } from '../components/ui'
 import { Ring } from '../components/charts'
 import { useActions } from '../components/Actions'
 import type { Debt } from '../data/types'
@@ -29,6 +29,7 @@ export default function Dividas() {
     <div>
       <ScreenHeader title="Dívidas" sub={open.length ? `${plural(open.length, 'compromisso', 'compromissos')} em aberto` : 'Nada em aberto'} />
 
+      <Columns template="lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]" main={<div className="lg:sticky lg:top-9">
       <section className="card grid grid-cols-2 divide-x divide-rule">
         <div className="p-4">
           <p className="text-sm font-semibold text-muted">Parcelas por mês</p>
@@ -54,6 +55,8 @@ export default function Dividas() {
         </div>
       )}
 
+      <p className="mt-6 hidden px-1 text-xs text-faint lg:block">A importação automática de faturas chega com Open Finance.</p>
+      </div>} side={<>
       <Section title="Em aberto">
         {open.length === 0 ? (
           <Empty>Nenhuma parcela em aberto.</Empty>
@@ -107,7 +110,8 @@ export default function Dividas() {
         </Section>
       )}
 
-      <p className="mt-6 px-1 text-xs text-faint">A importação automática de faturas chega com Open Finance.</p>
+      <p className="mt-6 px-1 text-xs text-faint lg:hidden">A importação automática de faturas chega com Open Finance.</p>
+      </>} />
     </div>
   )
 }

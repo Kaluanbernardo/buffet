@@ -8,7 +8,11 @@ export interface Debt { id: string; description: string; bank: string; installme
 export interface Reserve { id: string; name: string; target: number; current: number }
 export interface Investment { id: string; name: string; kind: string; institution: string; amount: number }
 export interface Bank { name: string; status: 'active' | 'planned' }
-export interface AppConfig { categories: Category[]; banks: Bank[] }
+export interface AppConfig {
+  categories: Category[]; banks: Bank[]
+  /** buffet_app_config.cash_balance — read-only in the app (set by the chat); null/absent = unknown. */
+  cash_balance?: number | null
+}
 export interface BuffetData {
   transactions: Transaction[]; budgets: Budget[]; debts: Debt[]; reserves: Reserve[]; investments: Investment[]; config: AppConfig
   /** "Renda do mês" per month key ("2026-10" → 8500). A month without an entry repeats the last one. */

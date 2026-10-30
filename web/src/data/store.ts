@@ -106,7 +106,8 @@ export function supabaseStore(sb: SupabaseClient): DataStore {
         reserves: reserves.map((r) => ({ id: str(r.id), name: str(r.name), target: num(r.target), current: num(r.current) })),
         investments: investments.map((r) => ({ id: str(r.id), name: str(r.name), kind: str(r.kind), institution: str(r.institution), amount: num(r.amount) })),
         incomes: Object.fromEntries(incomes.map((r) => [str(r.month), num(r.amount)])),
-        ...(cfg ? { config: { categories: cfg.categories as string[], banks: cfg.banks as BuffetData['config']['banks'] } } : {}),
+        ...(cfg ? { config: { categories: cfg.categories as string[], banks: cfg.banks as BuffetData['config']['banks'],
+          cash_balance: cfg.cash_balance == null || !Number.isFinite(Number(cfg.cash_balance)) ? null : Number(cfg.cash_balance) } } : {}),
       })
       if (cfg) { last = data; return data }
       // Fresh account: seed config/budgets (or this device's F0 data) and write it all.

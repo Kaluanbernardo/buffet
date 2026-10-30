@@ -77,6 +77,12 @@ export default function Hoje() {
         <button className="btn mt-5 w-full" onClick={openNew}>Novo gasto</button>
       </section>
 
+      {/* Cash on hand (buffet_app_config.cash_balance) */}
+      <section className="card mt-3 flex items-baseline justify-between gap-3 px-4 py-3.5" aria-label="Saldo em caixa">
+        <span className="text-sm font-semibold text-muted">Saldo em caixa</span>
+        <span className="money font-semibold">{data.config.cash_balance == null ? <span className="text-faint">—</span> : money(data.config.cash_balance)}</span>
+      </section>
+
       {/* 2 · Where the month went */}
       <Section title={`Para onde foi em ${clock.name}`}>
         {share.length === 0 ? (

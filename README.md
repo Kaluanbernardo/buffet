@@ -36,7 +36,17 @@ scripts/buffet import-jsonl data/expenses.jsonl   # idempotente pelo id
 scripts/buffet sql "select category, sum(amount) from buffet_transactions group by 1"
 ```
 Quando o Kaluan disser no chat "gastei 32 no mercado no Nubank", o assistente roda `buffet expense 32 --merchant Mercado
---category Alimentação --bank Nubank` e confirma com o id/total de `buffet list`. Token:
+--category Alimentação --bank Nubank` e confirma com o id/total de `buffet list`.
+
+**Fatura de cartão não é gasto** (as compras já entraram uma a uma): vai para `buffet_card_payments`, fora de todos os
+totais e gráficos; no PWA aparece apagada no extrato de Gastos ("Fatura Inter · Não conta como gasto") e numa linha
+discreta no card do mês em Hoje. "Paguei a fatura do Inter com o Nubank" →
+```bash
+scripts/buffet pay-bill 767,79 --card Inter --from Nubank   # debita o cash_balance se --from = cash_balance_bank
+scripts/buffet pay-bill 500 --card Inter --no-cash          # só registra, sem mexer no saldo
+scripts/buffet del-bill <id> [--restore-cash]               # desfaz; --restore-cash devolve ao saldo
+```
+`buffet expense` avisa quando o estabelecimento/nota fala em "fatura". Desenho: `research/bill-payment-design.md` (opção B). Token:
 `$SUPABASE_ACCESS_TOKEN` ou `/home/box/.secrets/supabase_access_token` (nunca impresso). `BUFFET_ROLLBACK=1` testa sem gravar.
 
 ## Migrations

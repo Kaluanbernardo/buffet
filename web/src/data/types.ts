@@ -1,6 +1,8 @@
 // Mirrors supabase/migrations/*_buffet_init.sql (buffet_* tables). Keep in sync.
 export type Category = string
 export interface Transaction { id: string; date: string; amount: number; merchant: string; category: Category; bank?: string; note?: string }
+/** buffet_card_payments — paying a card bill moves money, it isn't spending: never part of any spend total. Read-only in the app (chat writes via `buffet pay-bill`). */
+export interface CardPayment { id: string; date: string; amount: number; card_bank: string; paid_from?: string; note?: string }
 /** Soft grouping on Orçamento (YNAB-style category groups). Missing = derived from the category name. */
 export type BudgetGroup = 'essenciais' | 'lifestyle' | 'metas'
 export interface Budget { category: Category; monthly_limit: number; group?: BudgetGroup }
@@ -14,7 +16,7 @@ export interface AppConfig {
   cash_balance?: number | null
 }
 export interface BuffetData {
-  transactions: Transaction[]; budgets: Budget[]; debts: Debt[]; reserves: Reserve[]; investments: Investment[]; config: AppConfig
+  transactions: Transaction[]; cardPayments: CardPayment[]; budgets: Budget[]; debts: Debt[]; reserves: Reserve[]; investments: Investment[]; config: AppConfig
   /** "Renda do mês" per month key ("2026-10" → 8500). A month without an entry repeats the last one. */
   incomes: Record<string, number>
 }

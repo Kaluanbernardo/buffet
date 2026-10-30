@@ -13,6 +13,12 @@ GASTOS
   buffet list [--date d | --month AAAA-MM]    lançamentos (padrão: mês atual) + total
   buffet import-jsonl <arquivo>               importa data/expenses.jsonl (idempotente pelo id)
 
+FATURAS (buffet_card_payments — não são gasto, ficam fora de todos os totais)
+  buffet pay-bill <valor> --card Inter [--from Nubank] [--date d] [--note t] [--debt <id>] [--no-cash]
+        registra pagamento de fatura; se --from for a conta do saldo (cash_balance_bank),
+        debita o cash_balance no mesmo comando (--no-cash pula)
+  buffet del-bill <id> [--restore-cash]       apaga um pagamento; --restore-cash devolve ao saldo
+
 SQL
   buffet sql "<SELECT ...>"                   SQL livre como bot (um comando)
   buffet admin-sql "<SQL>"                    como postgres (evitar; só manutenção)
@@ -27,6 +33,7 @@ REF = os.environ.get("SUPABASE_PROJECT_REF", "qlphmxjehsexuxspspaw")
 TOKEN_FILE = "/home/box/.secrets/supabase_access_token"
 TZ = ZoneInfo("America/Sao_Paulo")
 CATEGORIES = ("Alimentação", "Transporte", "Moradia", "Saúde", "Lazer", "Assinaturas", "Educação", "Outros")
+BANKS = ("Nubank", "Neon", "Inter", "XP")
 
 
 # ---------------------------------------------------------------- transporte
@@ -160,14 +167,27 @@ def pcategory(s):
     return s
 
 
+def pbank(s):
+    """Banco com a grafia padrão (inter → Inter); outro qualquer passa como veio."""
+    return next((b for b in BANKS if b.lower() == s.strip().lower()), s.strip())
+
+
+def brl(v):
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 # ---------------------------------------------------------------- comandos
 TX_COLS = "id, date, amount, merchant, category, bank, note, source"
+BILL_COLS = "id, date, amount, card_bank, paid_from, note, source"
 
 
 def cmd_expense(a):
     pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note"))
     if len(pos) != 1 or not o.get("merchant") or not o.get("category"):
         sys.exit("uso: buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t]")
+    if re.search(r"fatura", f"{o['merchant']} {o.get('note') or ''}", re.I):
+        print("aviso: parece pagamento de fatura; isso não é gasto. Use: buffet pay-bill <valor> --card <banco> --from <conta>",
+              file=sys.stderr)
     rows = bot(
         "insert into public.buffet_transactions (date, amount, merchant, category, bank, note, source) values ("
         f"{lit(pdate(o.get('date')))}, {pmoney(pos[0])}, {lit(o['merchant'])}, {lit(pcategory(o['category']))}, "
@@ -198,8 +218,52 @@ def cmd_list(a):
     rows = bot(f"select {TX_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
     table(rows)
     if rows:
-        total = sum(float(r["amount"]) for r in rows)
-        print(f"\n{len(rows)} lançamento(s) · total R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        print(f"\n{len(rows)} lançamento(s) · total {brl(sum(float(r['amount']) for r in rows))}")
+    bills = bot(f"select {BILL_COLS} from public.buffet_card_payments where {where} order by date desc, created_at desc")
+    if bills:
+        print("\npagamentos de fatura (fora do total):")
+        table(bills)
+        print(f"\n{len(bills)} fatura(s) · {brl(sum(float(r['amount']) for r in bills))}")
+
+
+def cmd_pay_bill(a):
+    pos, o = opts(a, flags=("card", "from", "date", "note", "debt"), bools=("no-cash",))
+    if len(pos) != 1 or not o.get("card"):
+        sys.exit("uso: buffet pay-bill <valor> --card Inter [--from Nubank] [--date d] [--note t] [--debt <id>] [--no-cash]")
+    paid_from = pbank(o["from"]) if o.get("from") else None
+    insert = ("insert into public.buffet_card_payments (date, amount, card_bank, paid_from, debt_id, note, source) values ("
+              f"{lit(pdate(o.get('date')))}, {pmoney(pos[0])}, {lit(pbank(o['card']))}, {lit(paid_from)}, "
+              f"{lit(o.get('debt'))}, {lit(o.get('note'))}, 'bot') returning {BILL_COLS}")
+    if o.get("no-cash") or not paid_from:
+        table(bot(insert))
+        return
+    # Um comando só: insere e, se a conta pagadora for a do saldo, debita o cash_balance (atômico).
+    rows = bot(f"with p as ({insert}), c as (update public.buffet_app_config c set cash_balance = c.cash_balance - p.amount, "
+               "updated_at = now() from p where lower(p.paid_from) = lower(c.cash_balance_bank) and c.cash_balance is not null "
+               "returning c.cash_balance) "
+               f"select p.*, (select cash_balance from c) as cash_balance from p")
+    table(rows)
+    if rows and rows[0].get("cash_balance") is None:
+        print(f"aviso: {paid_from} não é a conta do saldo (cash_balance_bank); cash_balance não mudou", file=sys.stderr)
+
+
+def cmd_del_bill(a):
+    pos, o = opts(a, bools=("restore-cash",))
+    if len(pos) != 1:
+        sys.exit("uso: buffet del-bill <id> [--restore-cash]")
+    delete = f"delete from public.buffet_card_payments where id = {lit(pos[0])} returning {BILL_COLS}"
+    if o.get("restore-cash"):
+        rows = bot(f"with p as ({delete}), c as (update public.buffet_app_config c set cash_balance = c.cash_balance + p.amount, "
+                   "updated_at = now() from p where lower(p.paid_from) = lower(c.cash_balance_bank) and c.cash_balance is not null "
+                   "returning c.cash_balance) "
+                   f"select p.*, (select cash_balance from c) as cash_balance from p")
+    else:
+        rows = bot(delete)
+    if not rows:
+        sys.exit(f"erro: pagamento de fatura {pos[0]} não encontrado")
+    table(rows)
+    if not o.get("restore-cash") and rows[0].get("paid_from"):
+        print("aviso: cash_balance não foi restaurado (use --restore-cash se o pagamento tinha debitado o saldo)", file=sys.stderr)
 
 
 def cmd_import_jsonl(a):
@@ -227,7 +291,8 @@ def cmd_import_jsonl(a):
     print(f"\nimportados: {len(rows)} · já existiam: {len(values) - len(rows)}")
 
 
-COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-jsonl": cmd_import_jsonl}
+COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-jsonl": cmd_import_jsonl,
+            "pay-bill": cmd_pay_bill, "del-bill": cmd_del_bill}
 
 
 def main(a):

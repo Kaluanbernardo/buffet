@@ -2,7 +2,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import { categoryShare, dailySpend, daysUntilDue, dueLabel, isOpen, monthSummary } from '../data/derive'
-import { dayLabel, money, money0, plural } from '../lib/format'
+import { dayLabel, money, money0, monthKey, plural } from '../lib/format'
 import { CategoryIcon, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, ThemeButton, toneFor } from '../components/ui'
 import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
@@ -34,6 +34,7 @@ export default function Hoje() {
   const cats = m.cats.filter((c) => c.limit > 0 || c.spent > 0).sort((a, b) => b.spent / (b.limit || 1) - a.spent / (a.limit || 1))
   const recent = [...data.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 4)
   const share = categoryShare(m.tx)
+  const billsPaid = data.cardPayments.filter((b) => monthKey(b.date) === m.mk).reduce((s, b) => s + b.amount, 0)
   const daily = dailySpend(data.transactions, 30)
   const dues = data.debts.filter(isOpen).map((d) => ({ ...d, inDays: daysUntilDue(d.due_day) })).sort((a, b) => a.inDays - b.inDays).slice(0, 3)
 
@@ -73,6 +74,9 @@ export default function Hoje() {
           <p className="mt-3 text-sm text-muted text-pretty">
             Defina limites no <Link to="/orcamento" className="link">Orçamento</Link> para ver quanto ainda pode gastar por dia.
           </p>
+        )}
+        {billsPaid > 0 && (
+          <p className="money mt-4 text-[13px] text-faint">Faturas pagas em {clock.name}: {money(billsPaid)} · fora dos gastos</p>
         )}
         <button className="btn mt-5 w-full" onClick={openNew}>Novo gasto</button>
       </section>

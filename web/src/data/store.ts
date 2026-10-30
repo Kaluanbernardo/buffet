@@ -96,10 +96,13 @@ export function supabaseStore(sb: SupabaseClient): DataStore {
     remote: true,
     async load() {
       uid = (await sb.auth.getUser()).data.user?.id ?? ''
-      const [tx, budgets, debts, reserves, investments, incomes, config] = await Promise.all(specs.map((s) => fetchAll(s.table)))
+      // Card payments are only read (not a Spec): the app never writes or deletes them.
+      const [[tx, budgets, debts, reserves, investments, incomes, config], bills] = await Promise.all([
+        Promise.all(specs.map((s) => fetchAll(s.table))), fetchAll('buffet_card_payments')])
       const cfg = config[0]
       const data = migrate({
         transactions: tx.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), merchant: str(r.merchant), category: str(r.category), bank: opt(r.bank), note: opt(r.note) })),
+        cardPayments: bills.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), card_bank: str(r.card_bank), paid_from: opt(r.paid_from), note: opt(r.note) })),
         budgets: budgets.map((r) => ({ category: str(r.category), monthly_limit: num(r.monthly_limit), ...(r.group_name ? { group: r.group_name as BudgetGroup } : {}) })),
         debts: debts.map((r) => ({ id: str(r.id), description: str(r.description), bank: str(r.bank), installment_amount: num(r.installment_amount),
           installments_paid: num(r.installments_paid), installments_total: num(r.installments_total) || 1, due_day: num(r.due_day) || 1 })),
@@ -115,7 +118,7 @@ export function supabaseStore(sb: SupabaseClient): DataStore {
       try { local = JSON.parse(localStorage.getItem(KEY) ?? '{}') } catch { /* ignore */ }
       const base = migrate({ ...seed(), ...local })
       const ids = new Set(data.transactions.map((t) => t.id))
-      const first: BuffetData = { ...base, transactions: [...data.transactions, ...base.transactions.filter((t) => !ids.has(t.id) && !t.id.startsWith('seed-'))] }
+      const first: BuffetData = { ...base, cardPayments: data.cardPayments, transactions: [...data.transactions, ...base.transactions.filter((t) => !ids.has(t.id) && !t.id.startsWith('seed-'))] }
       last = { ...data, config: undefined as unknown as BuffetData['config'] }   // config row doesn't exist yet → gets written
       await this.save(first)
       return first

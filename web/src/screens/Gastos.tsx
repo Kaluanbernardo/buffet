@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Search, Trash2, X } from 'lucide-react'
+import { ArrowLeftRight, Plus, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
-import type { Transaction } from '../data/types'
+import type { CardPayment, Transaction } from '../data/types'
 import { categoryShare, monthDays, monthSummary, weekDays } from '../data/derive'
 import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
 import { catColor, CategoryIcon, Empty, PeriodSwitcher, ScreenHeader, Segmented } from '../components/ui'
@@ -46,6 +46,9 @@ export default function Gastos() {
   const list = (view === 'dia' ? shown.filter((x) => x.date === day) : shown).sort((a, b) => b.date.localeCompare(a.date))
   const total = list.reduce((s, x) => s + x.amount, 0)
   const filtered = Boolean(cat || needle)
+  // Card bill payments sit in the timeline, muted and outside every total (they aren't spending). No category → hidden under a chip.
+  const inPeriod = (x: { date: string }) => (view === 'dia' ? x.date === day : view === 'semana' ? x.date >= wk && x.date <= wkEnd : monthKey(x.date) === mk)
+  const bills = cat ? [] : data.cardPayments.filter((b) => inPeriod(b) && (!needle || norm(`fatura ${b.card_bank} ${b.note ?? ''}`).includes(needle)))
 
   const firstWeek = weekStart(`${first}-01`)
   const pickMonth = (n: number) => {
@@ -55,8 +58,10 @@ export default function Gastos() {
   }
   const periodName = view === 'dia' ? dayLabel(day).toLowerCase() : view === 'semana' ? (wk === weekStart(t) ? 'nesta semana' : `na semana ${weekRange(wk)}`) : monthName(mk).toLowerCase()
 
-  const days = new Map<string, Transaction[]>()
-  for (const x of list) days.set(x.date, [...(days.get(x.date) ?? []), x])
+  type Row = { tx: Transaction } | { bill: CardPayment }
+  const days = new Map<string, Row[]>()
+  const rows: [string, Row][] = [...list.map((tx) => [tx.date, { tx }] as [string, Row]), ...bills.map((bill) => [bill.date, { bill }] as [string, Row])]
+  for (const [date, r] of rows.sort((a, b) => b[0].localeCompare(a[0]))) days.set(date, [...(days.get(date) ?? []), r])
 
   const remove = (t: Transaction) => {
     update((d) => ({ ...d, transactions: d.transactions.filter((x) => x.id !== t.id) }))
@@ -109,7 +114,7 @@ export default function Gastos() {
       {view === 'semana' && <WeekPanel key={wk} start={wk} tx={data.transactions.filter(matches)} />}
       {view === 'mes' && <MonthPanel key={mk} mk={mk} tx={shown} onPick={(c) => setCat(c === cat ? null : c)} />}
 
-      {list.length === 0 ? (
+      {list.length === 0 && bills.length === 0 ? (
         filtered ? (
           <Empty action={<button className="link" onClick={() => { setQ(''); setCat(null) }}>Limpar filtros</button>}>
             Nada encontrado {view === 'mes' ? 'em ' : ''}{periodName} com esses filtros.
@@ -125,29 +130,49 @@ export default function Gastos() {
             <section key={date}>
               <div className="mb-2 flex items-baseline justify-between px-1 text-[13px]">
                 <h2 className="font-bold text-muted first-letter:uppercase">{dayLabel(date)}</h2>
-                <span className="money text-faint">{money(items.reduce((s, t) => s + t.amount, 0))}</span>
+                {items.some((r) => 'tx' in r) && <span className="money text-faint">{money(items.reduce((s, r) => s + ('tx' in r ? r.tx.amount : 0), 0))}</span>}
               </div>
               <ul className="card divide-y divide-rule">
-                {items.map((t) => (
-                  <li key={t.id} className="group flex items-center gap-3 py-3 pr-1.5 pl-4">
-                    <CategoryIcon category={t.category} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold">{t.merchant}</p>
-                      <p className="truncate text-[13px] text-faint">{t.category}{t.bank ? ` · ${t.bank}` : ''}{t.note ? ` · ${t.note}` : ''}</p>
-                    </div>
-                    <span className="money flex-none font-semibold">{money(t.amount)}</span>
-                    <button aria-label={`Excluir ${t.merchant}`} onClick={() => remove(t)}
-                      className="grid size-10 flex-none place-items-center rounded-full text-faint transition-colors hover:bg-negative-tint hover:text-negative">
-                      <Trash2 size={16} />
-                    </button>
-                  </li>
-                ))}
+                {items.map((r) => {
+                  if ('bill' in r) return <BillRow key={r.bill.id} bill={r.bill} />
+                  const t = r.tx
+                  return (
+                    <li key={t.id} className="group flex items-center gap-3 py-3 pr-1.5 pl-4">
+                      <CategoryIcon category={t.category} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-semibold">{t.merchant}</p>
+                        <p className="truncate text-[13px] text-faint">{t.category}{t.bank ? ` · ${t.bank}` : ''}{t.note ? ` · ${t.note}` : ''}</p>
+                      </div>
+                      <span className="money flex-none font-semibold">{money(t.amount)}</span>
+                      <button aria-label={`Excluir ${t.merchant}`} onClick={() => remove(t)}
+                        className="grid size-10 flex-none place-items-center rounded-full text-faint transition-colors hover:bg-negative-tint hover:text-negative">
+                        <Trash2 size={16} />
+                      </button>
+                    </li>
+                    )
+                })}
               </ul>
             </section>
           ))}
         </div>
       )}
     </div>
+  )
+}
+
+/** A card bill payment in the timeline: muted, transfer icon, says it's outside the totals. Removal goes through the chat (buffet del-bill). */
+function BillRow({ bill }: { bill: CardPayment }) {
+  return (
+    <li className="flex items-center gap-3 py-3 pr-4 pl-4 text-muted">
+      <span aria-hidden className="grid size-9 flex-none place-items-center rounded-full border border-dashed border-control text-faint">
+        <ArrowLeftRight size={16} strokeWidth={1.75} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-semibold">Fatura {bill.card_bank}</p>
+        <p className="truncate text-[13px] text-faint">Não conta como gasto{bill.paid_from ? ` · ${bill.paid_from}` : ''}</p>
+      </div>
+      <span className="money flex-none text-faint">{money(bill.amount)}</span>
+    </li>
   )
 }
 

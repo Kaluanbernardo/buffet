@@ -5,6 +5,7 @@ export const DEFAULT_CATEGORIES = ['Alimentação', 'Transporte', 'Moradia', 'Sa
 
 export const seed = (): BuffetData => ({
   transactions: [{ id: 'seed-1', date: today(), amount: 29.47, merchant: 'Mangará', category: 'Alimentação', bank: 'Nubank' }],
+  cardPayments: [],
   budgets: DEFAULT_CATEGORIES.map((category) => ({ category, monthly_limit: 0 })),
   debts: [
     { id: 'seed-d1', description: 'Exemplo — parcela cartão', bank: 'Nubank', installment_amount: 0, installments_paid: 0, installments_total: 1, due_day: 10 },

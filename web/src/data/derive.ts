@@ -1,5 +1,5 @@
-import type { Budget, BudgetGroup, BuffetData, Debt } from './types'
-import { addDays, monthClock, monthKey, today } from '../lib/format'
+import type { Budget, BudgetGroup, BuffetData, Debt, SubCycle, Subscription, Transaction } from './types'
+import { addDays, monthClock, monthKey, parseISO, today } from '../lib/format'
 
 const cents = (v: number) => Math.round(v * 100) / 100
 
@@ -118,4 +118,83 @@ export function payoff(d: Debt) {
   const first = d.due_day >= day ? 0 : 1
   const last = new Date(y, m - 1 + first + left - 1, 1)
   return { left, owed: cents(left * d.installment_amount), year: last.getFullYear(), month: last.getMonth() }
+}
+
+// ---------------------------------------------------------------- assinaturas
+
+export const CYCLE_LABEL: Record<SubCycle, { adj: string; per: string }> = {
+  monthly: { adj: 'mensal', per: 'mês' }, yearly: { adj: 'anual', per: 'ano' },
+}
+
+/** What a subscription commits per month (yearly ÷ 12). A projection, never spend. */
+export const perMonth = (s: Subscription) => cents(s.cycle === 'yearly' ? s.amount / 12 : s.amount)
+
+const lastDay = (y: number, m0: number) => new Date(y, m0 + 1, 0).getDate()
+const iso = (y: number, m0: number, d: number) => `${y}-${String(m0 + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+
+/**
+ * Next charge after `next`, one cycle on, on the anchor day (the first charge's day, capped at month end).
+ * With `chargedOn`: a charge from well before this cycle (> 15 days, 60 for yearly) is history and doesn't advance.
+ * Mirrors public.buffet_sub_advance (supabase/migrations/*_buffet_subscriptions.sql) — keep the two equal.
+ */
+export function subAdvance(next: string, cycle: SubCycle, anchor?: number, chargedOn?: string) {
+  if (chargedOn && chargedOn < addDays(next, -(cycle === 'yearly' ? 60 : 15))) return next
+  const [y, m, d] = next.split('-').map(Number)
+  const t = new Date(y, m - 1 + (cycle === 'yearly' ? 12 : 1), 1)
+  return iso(t.getFullYear(), t.getMonth(), Math.min(anchor ?? d, lastDay(t.getFullYear(), t.getMonth())))
+}
+export const anchorOf = (s: Subscription) => (s.started_on ? Number(s.started_on.slice(8, 10)) : undefined)
+/** The subscription after one charge (or a skip, without `chargedOn`). */
+export const advanced = (s: Subscription, chargedOn?: string): Subscription => ({ ...s, next_due: subAdvance(s.next_due, s.cycle, anchorOf(s), chargedOn) })
+/** Rolled forward to the first date >= `ref` (resuming after a long pause). */
+export function rolled(s: Subscription, ref = today()): Subscription {
+  let next = s.next_due
+  for (let i = 0; next < ref && i < 600; i++) next = subAdvance(next, s.cycle, anchorOf(s))
+  return { ...s, next_due: next }
+}
+
+/** Whole days from today to `iso` (negative = past). */
+export const daysFrom = (to: string, from = today()) => Math.round((parseISO(to).getTime() - parseISO(from).getTime()) / 86400000)
+
+export type SubFlag = 'missing' | 'late' | 'soon' | 'later' | 'paused' | 'canceled'
+/**
+ * Everything derived (no columns): days to the next charge, the state pill, the linked charges (history),
+ * and whether the last real charge came at another price. "Não apareceu" = active, 3+ days past next_due.
+ */
+export function subState(s: Subscription, tx: Transaction[]) {
+  const charges = tx.filter((t) => t.subscription_id === s.id).sort((a, b) => b.date.localeCompare(a.date))
+  const last = charges[0]
+  const inDays = daysFrom(s.next_due)
+  const flag: SubFlag = s.status !== 'active' ? s.status
+    : inDays < -3 ? 'missing' : inDays < 0 ? 'late' : inDays <= s.remind_days ? 'soon' : 'later'
+  const priceChanged = last && Math.abs(last.amount - s.amount) >= 0.005 ? last.amount : null
+  const year = today().slice(0, 4)
+  const yearTotal = cents(charges.filter((t) => t.date.startsWith(year)).reduce((x, t) => x + t.amount, 0))
+  return { charges, last, inDays, flag, priceChanged, yearTotal, attention: flag === 'missing' || flag === 'late' || priceChanged !== null }
+}
+
+/** "Em 2 dias", "Cobra hoje", "Venceu há 2 dias", "Não apareceu", "Renova 15/jan" (yearly, far off). */
+export function subDueLabel(s: Subscription, inDays: number) {
+  if (s.status === 'paused') return 'Pausada'
+  if (s.status === 'canceled') return 'Cancelada'
+  if (inDays < -3) return 'Não apareceu'
+  if (inDays < 0) return inDays === -1 ? 'Venceu ontem' : `Venceu há ${-inDays} dias`
+  if (inDays === 0) return 'Cobra hoje'
+  if (inDays === 1) return 'Cobra amanhã'
+  if (s.cycle === 'yearly' && inDays > 31) return `Renova ${parseISO(s.next_due).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' }).replace('.', '').replace(' de ', '/')}`
+  return `Em ${inDays} dias`
+}
+
+const fold = (v: string) => v.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim()
+/** Does this spend's merchant contain the subscription's match (or name)? Accent- and case-blind. */
+export const merchantMatches = (s: Subscription, merchant: string) => {
+  const needle = fold(s.match || s.name)
+  return needle.length > 0 && fold(merchant).includes(needle)
+}
+
+/** "Vincular gasto…": unlinked spends within ±7 days of the charge date, at a price within ±15% or with a matching merchant. */
+export function linkCandidates(s: Subscription, tx: Transaction[]) {
+  return tx.filter((t) => !t.subscription_id && Math.abs(daysFrom(t.date, s.next_due)) <= 7
+    && (Math.abs(t.amount - s.amount) <= s.amount * 0.15 || merchantMatches(s, t.merchant)))
+    .sort((a, b) => Number(merchantMatches(s, b.merchant)) - Number(merchantMatches(s, a.merchant)) || Math.abs(daysFrom(a.date, s.next_due)) - Math.abs(daysFrom(b.date, s.next_due)))
 }

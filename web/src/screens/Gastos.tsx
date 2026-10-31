@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { ArrowLeftRight, Plus, Search, Trash2, X } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { ArrowLeftRight, MoreHorizontal, Plus, Repeat, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { CardPayment, Transaction } from '../data/types'
 import { categoryShare, monthDays, monthSummary, weekDays } from '../data/derive'
 import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
-import { catColor, CategoryIcon, Columns, Empty, PeriodSwitcher, ScreenHeader, Segmented } from '../components/ui'
+import { catColor, CategoryIcon, Columns, Empty, PeriodSwitcher, ScreenHeader, Segmented, Sheet } from '../components/ui'
 import { DailyBars, Donut, WeekBars } from '../components/charts'
 import { useActions } from '../components/Actions'
 
@@ -32,6 +32,9 @@ export default function Gastos() {
   const [day, setDay] = useState(t)
   const [wk, setWk] = useState(weekStart(t))
   const [q, setQ] = useState('')
+  const [menu, setMenu] = useState<Transaction | null>(null)
+  const navigate = useNavigate()
+  const subName = (id: string) => data.subscriptions.find((s) => s.id === id)?.name
 
   // Period first (the chosen day, week or month), then category and search on top of it.
   const inMonth = data.transactions.filter((x) => monthKey(x.date) === mk)
@@ -63,6 +66,11 @@ export default function Gastos() {
   const rows: [string, Row][] = [...list.map((tx) => [tx.date, { tx }] as [string, Row]), ...bills.map((bill) => [bill.date, { bill }] as [string, Row])]
   for (const [date, r] of rows.sort((a, b) => b[0].localeCompare(a[0]))) days.set(date, [...(days.get(date) ?? []), r])
 
+  const unlink = (t: Transaction) => {
+    const set = (sid?: string) => update((d) => ({ ...d, transactions: d.transactions.map((x) => (x.id === t.id ? { ...x, subscription_id: sid } : x)) }))
+    set(undefined)
+    notify({ msg: `${t.merchant} desvinculado da assinatura`, undo: () => set(t.subscription_id) })
+  }
   const remove = (t: Transaction) => {
     update((d) => ({ ...d, transactions: d.transactions.filter((x) => x.id !== t.id) }))
     notify({ msg: `${t.merchant} removido`, undo: () => update((d) => ({ ...d, transactions: [t, ...d.transactions] })) })
@@ -142,13 +150,16 @@ export default function Gastos() {
                     <li key={t.id} className="group flex items-center gap-3 py-3 pr-1.5 pl-4">
                       <CategoryIcon category={t.category} />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate font-semibold">{t.merchant}</p>
+                        <p className="flex items-center gap-1.5 font-semibold">
+                          <span className="truncate">{t.merchant}</span>
+                          {t.subscription_id && <Repeat size={13} strokeWidth={2.25} className="flex-none text-muted" aria-label={`Assinatura${subName(t.subscription_id) ? ` ${subName(t.subscription_id)}` : ''}`} />}
+                        </p>
                         <p className="truncate text-[13px] text-faint">{t.category}{t.bank ? ` · ${t.bank}` : ''}{t.note ? ` · ${t.note}` : ''}</p>
                       </div>
                       <span className="money flex-none font-semibold">{money(t.amount)}</span>
-                      <button aria-label={`Excluir ${t.merchant}`} onClick={() => remove(t)}
-                        className="grid size-10 flex-none place-items-center rounded-full text-faint transition-colors hover:bg-negative-tint hover:text-negative">
-                        <Trash2 size={16} />
+                      <button aria-label={`Ações de ${t.merchant}`} onClick={() => setMenu(t)}
+                        className="grid size-10 flex-none place-items-center rounded-full text-faint transition-colors hover:bg-raised hover:text-ink">
+                        <MoreHorizontal size={18} />
                       </button>
                     </li>
                     )
@@ -159,6 +170,27 @@ export default function Gastos() {
         </div>
       )}
       </>} />
+
+      <Sheet open={menu !== null} onClose={() => setMenu(null)} title={menu?.merchant ?? ''}>
+        {menu && (
+          <div className="grid gap-2">
+            <p className="money mb-2 text-sm text-muted">{money(menu.amount)} · {dayLabel(menu.date)} · {menu.category}
+              {menu.subscription_id && <> · ↻ {subName(menu.subscription_id) ?? 'assinatura'}</>}</p>
+            {data.subscriptionsReady !== false && (menu.subscription_id ? (
+              <>
+                <button className="btn-ghost h-11 justify-start px-4" onClick={() => { setMenu(null); navigate('/dividas?tab=assinaturas') }}><Repeat size={16} />Ver assinatura</button>
+                <button className="btn-ghost h-11 justify-start px-4" onClick={() => { unlink(menu); setMenu(null) }}>Desvincular da assinatura</button>
+              </>
+            ) : (
+              <button className="btn-ghost h-11 justify-start px-4" data-autofocus
+                onClick={() => { setMenu(null); navigate(`/dividas?tab=assinaturas&from=${encodeURIComponent(menu.id)}`) }}>
+                <Repeat size={16} />Acompanhar como assinatura
+              </button>
+            ))}
+            <button className="btn-ghost h-11 justify-start px-4 text-negative" onClick={() => { remove(menu); setMenu(null) }}><Trash2 size={16} />Excluir gasto</button>
+          </div>
+        )}
+      </Sheet>
     </div>
   )
 }

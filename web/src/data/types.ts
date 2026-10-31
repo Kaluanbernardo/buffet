@@ -1,6 +1,22 @@
 // Mirrors supabase/migrations/*_buffet_init.sql (buffet_* tables). Keep in sync.
 export type Category = string
-export interface Transaction { id: string; date: string; amount: number; merchant: string; category: Category; bank?: string; note?: string }
+export interface Transaction {
+  id: string; date: string; amount: number; merchant: string; category: Category; bank?: string; note?: string
+  /** buffet_subscriptions.id when this spend is a subscription's charge for a cycle (the ↻ badge). */
+  subscription_id?: string
+}
+/**
+ * buffet_subscriptions — a commitment, never money: it says what is expected (amount, cycle, next charge). The real
+ * charge is a Transaction with subscription_id, so it counts once, as spend. Never add these to a spend total.
+ */
+export type SubCycle = 'monthly' | 'yearly'
+export type SubStatus = 'active' | 'paused' | 'canceled'
+export interface Subscription {
+  id: string; name: string; amount: number; cycle: SubCycle; next_due: string; bank?: string; category: Category
+  status: SubStatus; remind_days: number; match?: string; cancel_hint?: string; note?: string
+  /** First charge; its day anchors the cycle (31 → 28/fev → 31/mar). */
+  started_on?: string; canceled_on?: string
+}
 /** buffet_card_payments — paying a card bill moves money, it isn't spending: never part of any spend total. Read-only in the app (chat writes via `buffet pay-bill`). */
 export interface CardPayment { id: string; date: string; amount: number; card_bank: string; paid_from?: string; note?: string }
 /** Soft grouping on Orçamento (YNAB-style category groups). Missing = derived from the category name. */
@@ -16,7 +32,9 @@ export interface AppConfig {
   cash_balance?: number | null
 }
 export interface BuffetData {
-  transactions: Transaction[]; cardPayments: CardPayment[]; budgets: Budget[]; debts: Debt[]; reserves: Reserve[]; investments: Investment[]; config: AppConfig
+  transactions: Transaction[]; cardPayments: CardPayment[]; subscriptions: Subscription[]; budgets: Budget[]; debts: Debt[]; reserves: Reserve[]; investments: Investment[]; config: AppConfig
   /** "Renda do mês" per month key ("2026-10" → 8500). A month without an entry repeats the last one. */
   incomes: Record<string, number>
+  /** False while the subscriptions migration isn't applied on Supabase: the screen explains, nothing syncs. */
+  subscriptionsReady?: boolean
 }

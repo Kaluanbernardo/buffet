@@ -1,11 +1,12 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
-import { categoryShare, dailySpend, daysUntilDue, dueLabel, isOpen, monthSummary } from '../data/derive'
+import { categoryShare, dailySpend, daysFrom, daysUntilDue, dueLabel, isOpen, monthSummary, subDueLabel } from '../data/derive'
 import { dayLabel, money, money0, monthKey, plural } from '../lib/format'
 import { CategoryIcon, Columns, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, ThemeButton, toneFor } from '../components/ui'
 import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
+import { SubIcon } from './Assinaturas'
 
 export default function Hoje() {
   const { data, hidden, toggleHidden } = useBuffet()
@@ -36,7 +37,20 @@ export default function Hoje() {
   const share = categoryShare(m.tx)
   const billsPaid = data.cardPayments.filter((b) => monthKey(b.date) === m.mk).reduce((s, b) => s + b.amount, 0)
   const daily = dailySpend(data.transactions, 30)
-  const dues = data.debts.filter(isOpen).map((d) => ({ ...d, inDays: daysUntilDue(d.due_day) })).sort((a, b) => a.inDays - b.inDays).slice(0, 3)
+  // Installments and active subscriptions not yet charged this cycle (next_due only moves on a charge/skip), soonest first.
+  type Due = { key: string; to: string; title: string; detail: string; amount: number; inDays: number; label: string; sub: boolean }
+  const dues: Due[] = [
+    ...data.debts.filter(isOpen).map((d) => {
+      const inDays = daysUntilDue(d.due_day)
+      return { key: d.id, to: '/dividas', title: d.description, amount: d.installment_amount, inDays, label: dueLabel(inDays), sub: false,
+        detail: `${d.bank} · dia ${d.due_day} · parcela ${Math.min(d.installments_paid + 1, d.installments_total)}/${d.installments_total}` }
+    }),
+    ...data.subscriptions.filter((s) => s.status === 'active' && daysFrom(s.next_due) <= 31).map((s) => {
+      const inDays = daysFrom(s.next_due)
+      return { key: s.id, to: '/dividas?tab=assinaturas', title: s.name, amount: s.amount, inDays, label: subDueLabel(s, inDays), sub: true,
+        detail: `Assinatura${s.bank ? ` · ${s.bank}` : ''} · ${s.next_due.slice(8)}/${s.next_due.slice(5, 7)}` }
+    }),
+  ].sort((a, b) => a.inDays - b.inDays).slice(0, 4)
 
   return (
     <div>
@@ -163,19 +177,20 @@ export default function Hoje() {
       {/* 6 · Upcoming dues */}
       <Section title="Próximos vencimentos" action={<Link to="/dividas" className="link">Dívidas</Link>}>
         {dues.length === 0 ? (
-          <Empty>Nenhuma parcela em aberto. Bom sinal.</Empty>
+          <Empty>Nenhuma parcela nem assinatura a vencer. Bom sinal.</Empty>
         ) : (
           <ul className="card divide-y divide-rule px-4">
             {dues.map((d) => (
-              <li key={d.id}>
-                <Link to="/dividas" className="flex items-center gap-3 py-3">
+              <li key={d.key}>
+                <Link to={d.to} className="flex items-center gap-3 py-3">
+                  {d.sub && <SubIcon size={32} />}
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold">{d.description}</p>
-                    <p className="text-[13px] text-faint">{d.bank} · dia {d.due_day} · parcela {Math.min(d.installments_paid + 1, d.installments_total)}/{d.installments_total}</p>
+                    <p className="truncate font-semibold">{d.title}</p>
+                    <p className="truncate text-[13px] text-faint">{d.detail}</p>
                   </div>
                   <div className="flex-none text-right">
-                    <p className="money font-semibold">{d.installment_amount > 0 ? money(d.installment_amount) : <span className="text-faint">—</span>}</p>
-                    <p className={`text-xs ${d.inDays <= 3 ? 'text-warning font-semibold' : 'text-faint'}`}>{dueLabel(d.inDays)}</p>
+                    <p className="money font-semibold">{d.amount > 0 ? money(d.amount) : <span className="text-faint">—</span>}</p>
+                    <p className={`text-xs ${d.inDays < -3 ? 'text-negative font-semibold' : d.inDays <= 3 ? 'text-warning font-semibold' : 'text-faint'}`}>{d.label}</p>
                   </div>
                   <ChevronRight size={16} className="flex-none text-faint" aria-hidden />
                 </Link>

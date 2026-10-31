@@ -4,7 +4,7 @@
  */
 import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { BudgetGroup, BuffetData } from './types'
+import type { BudgetGroup, BuffetData, Subscription } from './types'
 import { seed } from './seed'
 import { setValuesHidden, valuesHidden } from '../lib/format'
 import { supabase } from '../lib/supabase'
@@ -33,7 +33,7 @@ export function migrate(raw: Partial<BuffetData>): BuffetData {
   const budgets = (Array.isArray(d.budgets) ? d.budgets : []).map((b) =>
     (b.group && !GROUPS.includes(b.group) ? { category: b.category, monthly_limit: b.monthly_limit } : b))
   for (const c of d.config.categories) if (!budgets.some((b) => b.category === c)) budgets.push({ category: c, monthly_limit: 0 })
-  return { ...d, budgets, incomes }
+  return { ...d, budgets, incomes, subscriptions: Array.isArray(d.subscriptions) ? d.subscriptions : [] }
 }
 
 export const localStore: DataStore = {
@@ -61,9 +61,19 @@ const opt = (v: unknown) => (v == null || v === '' ? undefined : String(v))
 /** One synced collection: app items ⇄ table rows, keyed by `key` (row column = item field). */
 type Spec<T> = { table: string; key: string; stamp?: boolean; items: (d: BuffetData) => T[]; toRow: (x: T) => Row; keyOf: (x: T) => string }
 
-const specs: Spec<any>[] = [
+/**
+ * Synced collections, in write order: subscriptions before transactions so a new subscription exists before a
+ * spend points at it. Without the subscriptions migration (`subs` false) that table is skipped and
+ * subscription_id stays out of the transaction rows (upsert leaves columns it doesn't send untouched).
+ */
+const makeSpecs = (subs: boolean): Spec<any>[] => [
+  ...(subs ? [{ table: 'buffet_subscriptions', stamp: true, key: 'id', items: (d: BuffetData) => d.subscriptions, keyOf: (x: Subscription) => x.id,
+    toRow: (x: Subscription) => ({ id: x.id, name: x.name, amount: x.amount, cycle: x.cycle, next_due: x.next_due, bank: x.bank || null,
+      category: x.category, status: x.status, remind_days: x.remind_days, match: x.match || null, cancel_hint: x.cancel_hint || null,
+      note: x.note || null, started_on: x.started_on || null, canceled_on: x.canceled_on || null }) }] : []),
   { table: 'buffet_transactions', key: 'id', items: (d) => d.transactions, keyOf: (t) => t.id,
-    toRow: (t) => ({ id: t.id, date: t.date, amount: t.amount, merchant: t.merchant, category: t.category, bank: t.bank ?? null, note: t.note ?? null }) },
+    toRow: (t) => ({ id: t.id, date: t.date, amount: t.amount, merchant: t.merchant, category: t.category, bank: t.bank ?? null, note: t.note ?? null,
+      ...(subs ? { subscription_id: t.subscription_id ?? null } : {}) }) },
   { table: 'buffet_budgets', stamp: true, key: 'category', items: (d) => d.budgets, keyOf: (b) => b.category,
     toRow: (b) => ({ category: b.category, monthly_limit: b.monthly_limit, group_name: b.group ?? null }) },
   { table: 'buffet_debts', key: 'id', items: (d) => d.debts, keyOf: (x) => x.id,
@@ -79,6 +89,10 @@ const specs: Spec<any>[] = [
     toRow: (c) => ({ categories: c.categories, banks: c.banks }) },
 ]
 
+/** PostgREST/Postgres "no such table": the subscriptions migration hasn't been applied yet. */
+const missingTable = (e: { code?: string; message: string }) =>
+  e.code === 'PGRST205' || e.code === '42P01' || /does not exist|schema cache/i.test(e.message)
+
 /**
  * Supabase store. save() diffs against the last loaded/saved snapshot and only upserts changed items / deletes
  * removed ones (source='app'), so rows the chat inserted meanwhile are never overwritten by a stale full copy.
@@ -87,6 +101,7 @@ const specs: Spec<any>[] = [
 export function supabaseStore(sb: SupabaseClient): DataStore {
   let last: BuffetData | null = null
   let uid = ''
+  let ready = true
   const fetchAll = async (table: string) => {
     const { data, error } = await sb.from(table).select('*')
     if (error) throw new Error(`${table}: ${error.message}`)
@@ -96,12 +111,23 @@ export function supabaseStore(sb: SupabaseClient): DataStore {
     remote: true,
     async load() {
       uid = (await sb.auth.getUser()).data.user?.id ?? ''
+      // Probe subscriptions first: until its migration runs the app keeps working without them.
+      const probe = await sb.from('buffet_subscriptions').select('*')
+      if (probe.error && !missingTable(probe.error)) throw new Error(`buffet_subscriptions: ${probe.error.message}`)
+      ready = !probe.error
+      const subs = (probe.data ?? []) as Row[]
       // Card payments are only read (not a Spec): the app never writes or deletes them.
-      const [[tx, budgets, debts, reserves, investments, incomes, config], bills] = await Promise.all([
-        Promise.all(specs.map((s) => fetchAll(s.table))), fetchAll('buffet_card_payments')])
+      const tables = ['buffet_transactions', 'buffet_budgets', 'buffet_debts', 'buffet_reserves', 'buffet_investments', 'buffet_incomes', 'buffet_app_config', 'buffet_card_payments']
+      const [tx, budgets, debts, reserves, investments, incomes, config, bills] = await Promise.all(tables.map(fetchAll))
       const cfg = config[0]
       const data = migrate({
-        transactions: tx.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), merchant: str(r.merchant), category: str(r.category), bank: opt(r.bank), note: opt(r.note) })),
+        subscriptionsReady: ready,
+        transactions: tx.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), merchant: str(r.merchant), category: str(r.category), bank: opt(r.bank), note: opt(r.note),
+          ...(r.subscription_id ? { subscription_id: str(r.subscription_id) } : {}) })),
+        subscriptions: subs.map((r) => ({ id: str(r.id), name: str(r.name), amount: num(r.amount), cycle: r.cycle === 'yearly' ? 'yearly' : 'monthly',
+          next_due: str(r.next_due), bank: opt(r.bank), category: str(r.category) || 'Assinaturas',
+          status: r.status === 'paused' || r.status === 'canceled' ? r.status : 'active', remind_days: num(r.remind_days),
+          match: opt(r.match), cancel_hint: opt(r.cancel_hint), note: opt(r.note), started_on: opt(r.started_on), canceled_on: opt(r.canceled_on) })),
         cardPayments: bills.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), card_bank: str(r.card_bank), paid_from: opt(r.paid_from), note: opt(r.note) })),
         budgets: budgets.map((r) => ({ category: str(r.category), monthly_limit: num(r.monthly_limit), ...(r.group_name ? { group: r.group_name as BudgetGroup } : {}) })),
         debts: debts.map((r) => ({ id: str(r.id), description: str(r.description), bank: str(r.bank), installment_amount: num(r.installment_amount),
@@ -126,7 +152,7 @@ export function supabaseStore(sb: SupabaseClient): DataStore {
     async save(next) {
       const prev = last
       const now = new Date().toISOString()
-      for (const s of specs) {
+      for (const s of makeSpecs(ready)) {
         const before = new Map((prev ? s.items(prev) : []).map((x) => [s.keyOf(x), JSON.stringify(s.toRow(x))]))
         const items = s.items(next)
         const changed = items.filter((x) => { const b = before.get(s.keyOf(x)); return b === undefined || b !== JSON.stringify(s.toRow(x)) })

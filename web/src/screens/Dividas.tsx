@@ -1,12 +1,36 @@
 import { useBuffet } from '../data/store'
 import { daysUntilDue, dueLabel, isOpen, payoff } from '../data/derive'
 import { money, plural, shortMonth } from '../lib/format'
-import { Columns, Empty, ScreenHeader, Section } from '../components/ui'
+import { useSearchParams } from 'react-router-dom'
+import { Columns, Empty, ScreenHeader, Section, Segmented } from '../components/ui'
 import { Ring } from '../components/charts'
 import { useActions } from '../components/Actions'
 import type { Debt } from '../data/types'
+import Assinaturas from './Assinaturas'
 
+type Tab = 'parcelas' | 'assinaturas'
+const TABS: { key: Tab; label: string }[] = [{ key: 'parcelas', label: 'Parcelas' }, { key: 'assinaturas', label: 'Assinaturas' }]
+
+/** Dívidas: Parcelas | Assinaturas (?tab=assinaturas, so Hoje and Gastos can deep-link). */
 export default function Dividas() {
+  const { data } = useBuffet()
+  const [params, setParams] = useSearchParams()
+  const tab: Tab = params.get('tab') === 'assinaturas' ? 'assinaturas' : 'parcelas'
+  const setTab = (t: Tab) => setParams((p) => { if (t === 'parcelas') p.delete('tab'); else p.set('tab', t); return p }, { replace: true })
+  const open = data.debts.filter(isOpen).length
+  const subs = data.subscriptions.filter((s) => s.status === 'active').length
+  return (
+    <div>
+      <ScreenHeader title="Dívidas" sub={tab === 'parcelas'
+        ? (open ? `${plural(open, 'compromisso', 'compromissos')} em aberto` : 'Nada em aberto')
+        : (subs ? `${plural(subs, 'assinatura ativa', 'assinaturas ativas')}` : 'Nenhuma assinatura ativa')} />
+      <div className="mb-5 max-w-md md:mb-7"><Segmented value={tab} options={TABS} onChange={setTab} label="Tipo de compromisso" /></div>
+      {tab === 'parcelas' ? <Parcelas /> : <Assinaturas />}
+    </div>
+  )
+}
+
+function Parcelas() {
   const { data, update } = useBuffet()
   const { notify } = useActions()
   const open = data.debts.filter(isOpen).map((d) => ({ ...d, inDays: daysUntilDue(d.due_day), end: payoff(d) })).sort((a, b) => a.inDays - b.inDays)
@@ -26,9 +50,7 @@ export default function Dividas() {
   }
 
   return (
-    <div>
-      <ScreenHeader title="Dívidas" sub={open.length ? `${plural(open.length, 'compromisso', 'compromissos')} em aberto` : 'Nada em aberto'} />
-
+    <>
       <Columns template="lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]" main={<div className="lg:sticky lg:top-9">
       <section className="card grid grid-cols-2 divide-x divide-rule">
         <div className="p-4">
@@ -112,6 +134,6 @@ export default function Dividas() {
 
       <p className="mt-6 px-1 text-xs text-faint lg:hidden">A importação automática de faturas chega com Open Finance.</p>
       </>} />
-    </div>
+    </>
   )
 }

@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeftRight, MoreHorizontal, Plus, Repeat, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { CardPayment, Transaction } from '../data/types'
-import { categoryShare, monthDays, monthSummary, weekDays } from '../data/derive'
+import { categoryShare, isPosted, monthDays, monthSummary, posted, weekDays } from '../data/derive'
 import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
 import { catColor, CategoryIcon, Columns, Empty, PeriodSwitcher, ScreenHeader, Segmented, Sheet } from '../components/ui'
 import { DailyBars, Donut, WeekBars } from '../components/charts'
@@ -36,10 +36,12 @@ export default function Gastos() {
   const navigate = useNavigate()
   const subName = (id: string) => data.subscriptions.find((s) => s.id === id)?.name
 
-  // Period first (the chosen day, week or month), then category and search on top of it.
-  const inMonth = data.transactions.filter((x) => monthKey(x.date) === mk)
+  // Period first (the chosen day, week or month), then category and search on top of it. Only rows dated up to today:
+  // future installments (one row per month) are listed apart as "Agendadas", outside every total.
+  const done = data.transactions.filter((x) => isPosted(x, t))
+  const inMonth = done.filter((x) => monthKey(x.date) === mk)
   const wkEnd = addDays(wk, 6)
-  const inWeek = data.transactions.filter((x) => x.date >= wk && x.date <= wkEnd)
+  const inWeek = done.filter((x) => x.date >= wk && x.date <= wkEnd)
   const scope = view === 'semana' ? inWeek : inMonth
   const usedCats = [...new Set(scope.map((x) => x.category))].sort((a, b) => data.config.categories.indexOf(a) - data.config.categories.indexOf(b))
   if (cat && !usedCats.includes(cat)) usedCats.push(cat)
@@ -48,6 +50,7 @@ export default function Gastos() {
   const shown = scope.filter(matches)
   const list = (view === 'dia' ? shown.filter((x) => x.date === day) : shown).sort((a, b) => b.date.localeCompare(a.date))
   const total = list.reduce((s, x) => s + x.amount, 0)
+  const scheduled = view === 'mes' ? data.transactions.filter((x) => !isPosted(x, t) && monthKey(x.date) === mk && matches(x)).sort((a, b) => a.date.localeCompare(b.date)) : []
   const filtered = Boolean(cat || needle)
   // Card bill payments sit in the timeline, muted and outside every total (they aren't spending). No category → hidden under a chip.
   const inPeriod = (x: { date: string }) => (view === 'dia' ? x.date === day : view === 'semana' ? x.date >= wk && x.date <= wkEnd : monthKey(x.date) === mk)
@@ -120,11 +123,11 @@ export default function Gastos() {
       )}
 
       {view === 'dia' && <DayStrip key={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
-      {view === 'semana' && <WeekPanel key={wk} start={wk} tx={data.transactions.filter(matches)} />}
+      {view === 'semana' && <WeekPanel key={wk} start={wk} tx={done.filter(matches)} />}
       {view === 'mes' && <MonthPanel key={mk} mk={mk} tx={shown} onPick={(c) => setCat(c === cat ? null : c)} />}
       </>} side={<>
 
-      {list.length === 0 && bills.length === 0 ? (
+      {list.length === 0 && bills.length === 0 && scheduled.length === 0 ? (
         filtered ? (
           <Empty action={<button className="link" onClick={() => { setQ(''); setCat(null) }}>Limpar filtros</button>}>
             Nada encontrado {view === 'mes' ? 'em ' : ''}{periodName} com esses filtros.
@@ -167,6 +170,26 @@ export default function Gastos() {
               </ul>
             </section>
           ))}
+          {scheduled.length > 0 && (
+            <section aria-labelledby="scheduled-h">
+              <div className="mb-2 flex items-baseline justify-between px-1 text-[13px]">
+                <h2 id="scheduled-h" className="font-bold text-muted">Agendadas</h2>
+                <span className="money text-faint">{money(scheduled.reduce((s, x) => s + x.amount, 0))} · fora do total</span>
+              </div>
+              <ul className="card divide-y divide-rule">
+                {scheduled.map((x) => (
+                  <li key={x.id} className="flex items-center gap-3 py-3 pr-4 pl-4 text-muted">
+                    <CategoryIcon category={x.category} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold">{x.merchant}</p>
+                      <p className="truncate text-[13px] text-faint">{dayLabel(x.date)}{x.bank ? ` · ${x.bank}` : ''}{x.note ? ` · ${x.note}` : ''}</p>
+                    </div>
+                    <span className="money flex-none">{money(x.amount)}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
       )}
       </>} />
@@ -274,7 +297,7 @@ function WeekPanel({ start, tx }: { start: string; tx: Transaction[] }) {
 function MonthPanel({ mk, tx, onPick }: { mk: string; tx: Transaction[]; onPick: (c: string) => void }) {
   const { data } = useBuffet()
   const share = categoryShare(tx)
-  const m = monthSummary(data, mk)
+  const m = monthSummary(posted(data), mk)
   const days = monthDays(tx, mk)
   if (share.length === 0) return null
   const name = monthName(mk).toLowerCase()

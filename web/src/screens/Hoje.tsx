@@ -1,8 +1,8 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
-import { categoryShare, dailySpend, daysFrom, daysUntilDue, dueLabel, isOpen, monthSummary, subDueLabel } from '../data/derive'
-import { dayLabel, money, money0, monthKey, plural } from '../lib/format'
+import { bills, categoryShare, dailySpend, daysFrom, daysUntilDue, dueLabel, isOpen, monthSummary, posted, subDueLabel } from '../data/derive'
+import { dayLabel, money, money0, monthKey, plural, shortMonth } from '../lib/format'
 import { CategoryIcon, Columns, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, ThemeButton, toneFor } from '../components/ui'
 import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
@@ -12,7 +12,9 @@ export default function Hoje() {
   const { data, hidden, toggleHidden } = useBuffet()
   const { openNew } = useActions()
   const navigate = useNavigate()
-  const m = monthSummary(data)
+  // Spend = what already happened: future installments (one row per month) stay out until their date.
+  const live = posted(data)
+  const m = monthSummary(live)
   const { clock } = m
   const hasPlan = m.limit > 0
   const tone = toneFor(m.spent, m.limit, clock.elapsed)
@@ -33,14 +35,22 @@ export default function Hoje() {
   })()
 
   const cats = m.cats.filter((c) => c.limit > 0 || c.spent > 0).sort((a, b) => b.spent / (b.limit || 1) - a.spent / (a.limit || 1))
-  const recent = [...data.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 4)
+  const recent = [...live.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 4)
   const share = categoryShare(m.tx)
   const billsPaid = data.cardPayments.filter((b) => monthKey(b.date) === m.mk).reduce((s, b) => s + b.amount, 0)
-  const daily = dailySpend(data.transactions, 30)
-  // Installments and active subscriptions not yet charged this cycle (next_due only moves on a charge/skip), soonest first.
+  const daily = dailySpend(live.transactions, 30)
+  // Unpaid card bills (open/closed — card installments are paid through them), loans, and active subscriptions not yet
+  // charged this cycle (next_due only moves on a charge/skip), soonest first.
   type Due = { key: string; to: string; title: string; detail: string; amount: number; inDays: number; label: string; sub: boolean }
+  const billMonth = (mk: string) => shortMonth(Number(mk.slice(0, 4)), Number(mk.slice(5)) - 1)
   const dues: Due[] = [
-    ...data.debts.filter(isOpen).map((d) => {
+    ...bills(data).unpaid.filter((b) => b.state !== 'future').map((b) => {
+      const inDays = daysFrom(b.due)
+      return { key: `${b.card}-${b.month}`, to: '/dividas', title: `Fatura ${b.card}`, amount: b.total, inDays, sub: false,
+        label: inDays < 0 ? `Venceu há ${-inDays} ${-inDays === 1 ? 'dia' : 'dias'}` : dueLabel(inDays),
+        detail: `${billMonth(b.month)} · ${b.state === 'open' ? 'aberta' : 'fechada'} · vence ${b.due.slice(8)}/${b.due.slice(5, 7)}` }
+    }),
+    ...data.debts.filter((d) => isOpen(d) && (d.kind === 'loan' || (d.kind !== 'bill' && !data.transactions.some((t) => t.debt_id === d.id)))).map((d) => {
       const inDays = daysUntilDue(d.due_day)
       return { key: d.id, to: '/dividas', title: d.description, amount: d.installment_amount, inDays, label: dueLabel(inDays), sub: false,
         detail: `${d.bank} · dia ${d.due_day} · parcela ${Math.min(d.installments_paid + 1, d.installments_total)}/${d.installments_total}` }
@@ -177,7 +187,7 @@ export default function Hoje() {
       {/* 6 · Upcoming dues */}
       <Section title="Próximos vencimentos" action={<Link to="/dividas" className="link">Dívidas</Link>}>
         {dues.length === 0 ? (
-          <Empty>Nenhuma parcela nem assinatura a vencer. Bom sinal.</Empty>
+          <Empty>Nenhuma fatura, parcela nem assinatura a vencer. Bom sinal.</Empty>
         ) : (
           <ul className="card divide-y divide-rule px-4">
             {dues.map((d) => (

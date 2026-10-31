@@ -46,7 +46,26 @@ scripts/buffet pay-bill 767,79 --card Inter --from Nubank   # debita o cash_bala
 scripts/buffet pay-bill 500 --card Inter --no-cash          # só registra, sem mexer no saldo
 scripts/buffet del-bill <id> [--restore-cash]               # desfaz; --restore-cash devolve ao saldo
 ```
-`buffet expense` avisa quando o estabelecimento/nota fala em "fatura". Desenho: `research/bill-payment-design.md` (opção B). Token:
+`buffet expense` avisa quando o estabelecimento/nota fala em "fatura". Desenho: `research/bill-payment-design.md` (opção B).
+
+**Meio de pagamento e parcelas** (`research/installments-bills-proposal.md`, opção A). `method` (debit/pix/credit) fica
+separado de `bank` (a instituição). Débito/PIX descontam o `cash_balance` no mesmo comando; crédito entra na fatura
+(`bill_month`) pelo ciclo do cartão em `buffet_app_config.banks[].credit` e só sai do caixa no `pay-bill`. Parcelado =
+um plano em `buffet_debts` + **uma linha de gasto por parcela** (datas futuras; a última absorve o arredondamento).
+Fatura = linhas `credit` agrupadas por `(bank, bill_month)`; o valor que o app do banco mostra fica numa
+`buffet_debts kind='bill'` e a fatura vale `max(informado, detalhado)` — nunca a soma dos dois.
+```bash
+scripts/buffet expense 5 --merchant Café --category Alimentação --debit         # desconta o saldo
+scripts/buffet expense 28,77 --merchant Uber --category Transporte --credit Nubank
+scripts/buffet expense 689 --merchant Sapatos --category Vestimenta --credit Nubank --x 10   # plano + 10 linhas
+scripts/buffet bill                      # fatura aberta: itens, não detalhado, total, saldo depois de pagar
+scripts/buffet bills                     # faturas a pagar + comprometido + "livre de parcelas depois de"
+scripts/buffet bill set 2243 --card Nubank            # valor informado pelo banco (fatura aberta)
+scripts/buffet pay-bill 2243 --card Nubank --from Nubank   # marca a fatura paga + installments_paid dos planos
+scripts/buffet card set Nubank --closing 4 --due 11 · plans · del-plan <id> [--from AAAA-MM]
+```
+No PWA, linhas com data futura ficam fora de Hoje e dos totais de Gastos (aparecem como "Agendadas" no mês);
+Dívidas tem as abas Faturas | Parcelas | Assinaturas. Token:
 `$SUPABASE_ACCESS_TOKEN` ou `/home/box/.secrets/supabase_access_token` (nunca impresso). `BUFFET_ROLLBACK=1` testa sem gravar.
 
 ## Migrations

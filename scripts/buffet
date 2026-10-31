@@ -6,18 +6,31 @@ Cada comando roda `begin; set local role bot; <um comando SQL>; commit;` pela Ma
 RLS e grants mínimos do bot valem. Toda escrita leva source='bot'; user_id cai no owner (public.buffet_owner()).
 Datas: AAAA-MM-DD, 'hoje', 'ontem' ou dd/mm. Valores: 107.56 ou 107,56.
 
-GASTOS
-  buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t] [--sub <sub> | --no-sub]
-        lança um gasto (padrão: hoje); imprime o id. Sem --sub, vincula sozinho se o merchant bater com o
-        match de UMA assinatura ativa com próxima cobrança a até ±7 dias (avisa no stderr; --no-sub evita)
-  buffet del <id>                             apaga um lançamento
-  buffet list [--date d | --month AAAA-MM]    lançamentos (padrão: mês atual) + total
+GASTOS (method = meio de pagamento; bank = instituição)
+  buffet expense <valor> --merchant X --category Y [--date d] [--note t] [--sub <sub> | --no-sub]
+                 (--debit | --pix) [--bank b] [--no-cash]
+                 | --credit <cartão> [--x N [--parcela v] [--first-bill AAAA-MM]]
+        lança um gasto (padrão: hoje); imprime o id.
+        --debit/--pix: bank padrão = conta do saldo; se for ela, desconta o cash_balance no mesmo comando (--no-cash pula)
+        --credit Nubank: entra na fatura pelo ciclo do cartão (buffet card set); não mexe no caixa até o pay-bill
+        --x N: parcelado — grava o plano (buffet_debts) + N linhas, uma por parcela (data = compra + k−1 meses,
+        fatura = 1ª + k−1). Parcela = --parcela ou total/N truncado; a última absorve o arredondamento.
+        Sem --sub, vincula sozinho se o merchant bater com o match de UMA assinatura ativa com próxima a ±7 dias
+  buffet del <id>                             apaga um lançamento (parcela de plano: use del-plan)
+  buffet list [--date d | --month AAAA-MM]    lançamentos (padrão: mês atual) + total; futuras marcadas "agendada"
   buffet import-jsonl <arquivo>               importa data/expenses.jsonl (idempotente pelo id)
 
-FATURAS (buffet_card_payments — não são gasto, ficam fora de todos os totais)
-  buffet pay-bill <valor> --card Inter [--from Nubank] [--date d] [--note t] [--debt <id>] [--no-cash]
-        registra pagamento de fatura; se --from for a conta do saldo (cash_balance_bank),
-        debita o cash_balance no mesmo comando (--no-cash pula)
+CARTÕES E FATURAS (fatura = gastos method=credit agrupados por (bank, bill_month); pagamento não é gasto)
+  buffet card set <cartão> --closing 4 --due 11   ciclo do cartão (jsonb banks de buffet_app_config)
+  buffet bill [--card Nubank] [--month AAAA-MM]   fatura (padrão: aberta): itens, não detalhado, total, fecha/vence
+  buffet bills [--card Nubank]                    faturas em aberto e futuras: mês · parcelas · à vista · total
+  buffet bill set <valor> --card Nubank [--month AAAA-MM]   valor informado pelo app do banco (debts kind='bill')
+  buffet plans                                    parcelados em aberto (parcelas pagas pela fatura)
+  buffet del-plan <id> [--from AAAA-MM]           cancela/estorna o plano (apaga as parcelas); --from só dali em diante
+  buffet pay-bill <valor> --card Inter [--month AAAA-MM] [--from Nubank] [--date d] [--note t] [--debt <id>] [--no-cash]
+        registra pagamento de fatura; se --from for a conta do saldo (cash_balance_bank), debita o cash_balance no
+        mesmo comando (--no-cash pula). Cartão com ciclo: --month padrão = fatura mais antiga em aberto; marca a fatura
+        informada como paga e atualiza installments_paid dos planos com parcela até esse mês
   buffet del-bill <id> [--restore-cash]       apaga um pagamento; --restore-cash devolve ao saldo
 
 ASSINATURAS (buffet_subscriptions — compromisso, nunca soma; o gasto real continua em buffet_transactions)
@@ -50,7 +63,7 @@ from zoneinfo import ZoneInfo
 REF = os.environ.get("SUPABASE_PROJECT_REF", "qlphmxjehsexuxspspaw")
 TOKEN_FILE = "/home/box/.secrets/supabase_access_token"
 TZ = ZoneInfo("America/Sao_Paulo")
-CATEGORIES = ("Alimentação", "Transporte", "Moradia", "Saúde", "Lazer", "Assinaturas", "Educação", "Outros")
+CATEGORIES = ("Alimentação", "Transporte", "Moradia", "Saúde", "Lazer", "Assinaturas", "Educação", "Vestimenta", "Outros")
 BANKS = ("Nubank", "Neon", "Inter", "XP")
 
 
@@ -199,42 +212,171 @@ def brl(v):
 
 
 # ---------------------------------------------------------------- comandos
-TX_COLS = "id, date, amount, merchant, category, bank, note, source"
-BILL_COLS = "id, date, amount, card_bank, paid_from, note, source"
+TX_COLS = "id, date, amount, merchant, category, bank, method, bill_month, note, source"
+BILL_COLS = "id, date, amount, card_bank, paid_from, bill_month, note, source"
+# Desconta o gasto recém-gravado em `t` (CTE) do cash_balance, se a conta dele for a do saldo (atômico, como o pay-bill).
+CASH_FROM_T = ("c as (update public.buffet_app_config c set cash_balance = c.cash_balance - t.amount, updated_at = now() "
+               "from t where lower(t.bank) = lower(c.cash_balance_bank) and c.cash_balance is not null returning c.cash_balance)")
+
+
+def config():
+    rows = bot("select banks, cash_balance, cash_balance_bank from public.buffet_app_config")
+    return rows[0] if rows else {"banks": [], "cash_balance": None, "cash_balance_bank": None}
+
+
+def cycle(cfg, card):
+    """(closing_day, due_day) do cartão em banks[].credit, ou None."""
+    b = next((b for b in cfg.get("banks") or [] if norm(b.get("name")) == norm(card)), None)
+    c = (b or {}).get("credit") or {}
+    return (int(c["closing_day"]), int(c["due_day"])) if c.get("closing_day") and c.get("due_day") else None
+
+
+def need_cycle(cfg, card):
+    cy = cycle(cfg, card)
+    if not cy:
+        sys.exit(f"erro: {card} sem ciclo de cartão. Configure: buffet card set {card} --closing 4 --due 11")
+    return cy
+
+
+def bill_month(cy, iso):
+    """Espelho de public.buffet_bill_month: fatura (mês de vencimento) de uma compra de crédito na data."""
+    closing, due = cy
+    d = dt.date.fromisoformat(iso)
+    n = d.year * 12 + d.month - 1 + (0 if d.day < closing else 1) + (0 if due > closing else 1)
+    return f"{n // 12}-{n % 12 + 1:02d}"
+
+
+def shift(mk, n):
+    y, m = map(int, mk.split("-"))
+    k = y * 12 + m - 1 + n
+    return f"{k // 12}-{k % 12 + 1:02d}"
+
+
+def pmonth(s):
+    if not re.fullmatch(r"\d{4}-\d{2}", s or ""):
+        sys.exit("erro: mês no formato AAAA-MM")
+    return s
+
+
+def mon(mk):
+    return ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")[int(mk[5:]) - 1] + "/" + mk[2:4]
+
+
+def due_date(cy, mk):
+    y, m = map(int, mk.split("-"))
+    last = (dt.date(y + m // 12, m % 12 + 1, 1) - dt.timedelta(days=1)).day
+    return dt.date(y, m, min(cy[1], last))
+
+
+def close_date(cy, mk):
+    cm = mk if cy[1] > cy[0] else shift(mk, -1)
+    y, m = map(int, cm.split("-"))
+    last = (dt.date(y + m // 12, m % 12 + 1, 1) - dt.timedelta(days=1)).day
+    return dt.date(y, m, min(cy[0], last))
 
 
 def cmd_expense(a):
-    pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note", "sub"), bools=("no-sub",))
+    pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note", "sub", "credit", "x", "parcela", "first-bill"),
+                  bools=("no-sub", "debit", "pix", "no-cash"))
     if len(pos) != 1 or not o.get("merchant") or not o.get("category"):
-        sys.exit("uso: buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t] [--sub <sub> | --no-sub]")
+        sys.exit("uso: buffet expense <valor> --merchant X --category Y [--date d] [--note t] "
+                 "[--debit | --pix [--bank b] [--no-cash] | --credit <cartão> [--x N [--parcela v] [--first-bill AAAA-MM]]] "
+                 "[--sub <sub> | --no-sub]")
     if o.get("sub") and o.get("no-sub"):
         sys.exit("erro: use --sub ou --no-sub, não os dois")
+    methods = [m for m in ("debit", "pix", "credit") if o.get(m)]
+    if len(methods) > 1:
+        sys.exit("erro: use só um entre --debit, --pix e --credit")
+    method = methods[0] if methods else None
+    if method == "credit" and o.get("bank"):
+        sys.exit("erro: no crédito o banco é o cartão (--credit Nubank); não use --bank")
+    if (o.get("x") or o.get("parcela") or o.get("first-bill")) and method != "credit":
+        sys.exit("erro: --x/--parcela/--first-bill só com --credit <cartão>")
     if re.search(r"fatura", f"{o['merchant']} {o.get('note') or ''}", re.I):
         print("aviso: parece pagamento de fatura; isso não é gasto. Use: buffet pay-bill <valor> --card <banco> --from <conta>",
               file=sys.stderr)
     date, amount = pdate(o.get("date")), pmoney(pos[0])
+    category = pcategory(o["category"])
+    if method == "credit" and o.get("x"):
+        return expense_plan(o, date, amount, category)
     sub = resolve_sub(o["sub"]) if o.get("sub") else None if o.get("no-sub") else auto_sub(o["merchant"], date)
-    bank = pbank(o["bank"]) if o.get("bank") else (sub or {}).get("bank")
-    insert = ("insert into public.buffet_transactions (date, amount, merchant, category, bank, note, source"
+    cfg = config() if method else {}
+    bill = None
+    if method == "credit":
+        bank = pbank(o["credit"])
+        bill = bill_month(need_cycle(cfg, bank), date)
+    else:
+        bank = pbank(o["bank"]) if o.get("bank") else (sub or {}).get("bank")
+        if method and not bank:
+            bank = cfg.get("cash_balance_bank")
+    if not method:
+        print("aviso: sem meio de pagamento (--debit/--pix/--credit): não entra em fatura nem no caixa", file=sys.stderr)
+    if norm(bank) in ("cartao", "credito"):
+        print("aviso: qual cartão? Use --credit <cartão> (ex.: --credit Nubank)", file=sys.stderr)
+    insert = ("insert into public.buffet_transactions (date, amount, merchant, category, bank, method, bill_month, note, source"
               + (", subscription_id" if sub else "") + ") values ("
-              f"{lit(date)}, {amount}, {lit(o['merchant'])}, {lit(pcategory(o['category']))}, {lit(bank)}, {lit(o.get('note'))}, 'bot'"
-              + (f", {lit(sub['id'])}) returning {TX_COLS}, subscription_id" if sub else f") returning {TX_COLS}"))
-    if not sub:
-        table(bot(insert))
-        return
-    rows = bot(f"with t as ({insert}), {ADVANCE_FROM_T} select t.*, (select next_due from u) as next_due from t")
-    table(rows, TX_COLS.split(", ") + ["next_due"])
-    print(f"vinculado à assinatura {sub['name']}; próxima {dm(rows[0]['next_due'])}", file=sys.stderr)
-    price_warn(sub, amount)
+              f"{lit(date)}, {amount}, {lit(o['merchant'])}, {lit(category)}, {lit(bank)}, {lit(method)}, {lit(bill)}, "
+              f"{lit(o.get('note'))}, 'bot'" + (f", {lit(sub['id'])}" if sub else "") + f") returning {TX_COLS}, subscription_id")
+    cash = method in ("debit", "pix") and not o.get("no-cash")
+    ctes = [f"t as ({insert})"] + ([ADVANCE_FROM_T] if sub else []) + ([CASH_FROM_T] if cash else [])
+    extra = (["(select next_due from u) as next_due"] if sub else []) + (["(select cash_balance from c) as cash_balance"] if cash else [])
+    rows = bot(f"with {', '.join(ctes)} select t.*{''.join(', ' + e for e in extra)} from t")
+    table(rows, TX_COLS.split(", ") + (["next_due"] if sub else []) + (["cash_balance"] if cash else []))
+    if bill:
+        cy = cycle(cfg, bank)
+        print(f"fatura {bank} {mon(bill)} (fecha {close_date(cy, bill):%d/%m}, vence {due_date(cy, bill):%d/%m})", file=sys.stderr)
+    if cash and rows[0].get("cash_balance") is None:
+        print(f"aviso: {bank} não é a conta do saldo (cash_balance_bank); cash_balance não mudou", file=sys.stderr)
+    if sub:
+        print(f"vinculado à assinatura {sub['name']}; próxima {dm(rows[0]['next_due'])}", file=sys.stderr)
+        price_warn(sub, amount)
+
+
+def expense_plan(o, date, total, category):
+    """Parcelado no crédito: plano em buffet_debts + N linhas em buffet_transactions, num comando só."""
+    card = pbank(o["credit"])
+    n = int(o["x"])
+    if not 2 <= n <= 48:
+        sys.exit("erro: --x entre 2 e 48")
+    cy = need_cycle(config(), card)
+    inst = pmoney(o["parcela"]) if o.get("parcela") else int(total * 100 / n) / 100
+    last = round(total - (n - 1) * inst, 2)
+    if last <= 0:
+        sys.exit(f"erro: {n} × {brl(inst)} passa do total {brl(total)}")
+    first = pmonth(o["first-bill"]) if o.get("first-bill") else bill_month(cy, date)
+    total_txt = brl(total).replace("R$ ", "")
+    note = lit((o["note"] + " · ") if o.get("note") else "")
+    rows = bot(
+        "with d as (insert into public.buffet_debts (description, bank, card, kind, installment_amount, installments_paid, "
+        "installments_total, due_day, total_amount, purchase_date, first_bill, source) values ("
+        f"{lit(o['merchant'])}, {lit(card)}, {lit(card)}, 'installments', {inst}, 0, {n}, {cy[1]}, {total}, {lit(date)}, "
+        f"{lit(first)}, 'bot') returning *), "
+        "t as (insert into public.buffet_transactions (user_id, date, amount, merchant, category, bank, method, bill_month, "
+        "debt_id, installment_no, note, source) select d.user_id, (d.purchase_date + (k - 1) * interval '1 month')::date, "
+        "case when k = d.installments_total then d.total_amount - (k - 1) * d.installment_amount else d.installment_amount end, "
+        f"d.description, {lit(category)}, d.card, 'credit', "
+        "to_char(to_date(d.first_bill, 'YYYY-MM') + (k - 1) * interval '1 month', 'YYYY-MM'), d.id, k, "
+        f"{note} || 'parcela ' || k || '/' || d.installments_total || ' de R$ ' || {lit(total_txt)}, 'bot' "
+        "from d, generate_series(1, d.installments_total) k returning *) "
+        "select t.installment_no as k, t.date, t.amount, t.bill_month, t.id, t.debt_id from t order by t.installment_no")
+    print(f"{o['merchant']} · {brl(total)} em {n}x no {card}")
+    print(" · ".join(f"{r['k']}/{n} {mon(r['bill_month'])} {brl(float(r['amount'])).replace('R$ ', '')}" for r in rows))
+    print(f"plano: {rows[0]['debt_id']}")
 
 
 def cmd_del(a):
     if len(a) != 1:
         sys.exit("uso: buffet del <id>")
+    plan = bot(f"select t.debt_id, d.description from public.buffet_transactions t join public.buffet_debts d on d.id = t.debt_id "
+               f"where t.id = {lit(a[0])}")
+    if plan:
+        sys.exit(f"erro: é parcela do plano {plan[0]['description']}; use buffet del-plan {plan[0]['debt_id']} [--from AAAA-MM]")
     rows = bot(f"delete from public.buffet_transactions where id = {lit(a[0])} returning {TX_COLS}")
     if not rows:
         sys.exit(f"erro: lançamento {a[0]} não encontrado")
     table(rows)
+    if rows[0].get("method") in ("debit", "pix"):
+        print("aviso: cash_balance não foi devolvido (débito/PIX descontaram do saldo)", file=sys.stderr)
 
 
 def cmd_list(a):
@@ -254,9 +396,15 @@ def cmd_list(a):
                    f"where {where.replace('date', 't.date')} order by t.date desc, t.created_at desc")
     except SqlError:
         rows = bot(f"select {TX_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
+    t = today().isoformat()
+    for r in rows:
+        if str(r["date"]) > t:
+            r["note"] = "(agendada) " + (r.get("note") or "")
     table(rows)
     if rows:
-        print(f"\n{len(rows)} lançamento(s) · total {brl(sum(float(r['amount']) for r in rows))}")
+        future = [r for r in rows if str(r["date"]) > t]
+        print(f"\n{len(rows)} lançamento(s) · total {brl(sum(float(r['amount']) for r in rows))}"
+              + (f" (inclui {len(future)} agendada(s), {brl(sum(float(r['amount']) for r in future))})" if future else ""))
     bills = bot(f"select {BILL_COLS} from public.buffet_card_payments where {where} order by date desc, created_at desc")
     if bills:
         print("\npagamentos de fatura (fora do total):")
@@ -265,24 +413,198 @@ def cmd_list(a):
 
 
 def cmd_pay_bill(a):
-    pos, o = opts(a, flags=("card", "from", "date", "note", "debt"), bools=("no-cash",))
+    pos, o = opts(a, flags=("card", "from", "date", "note", "debt", "month"), bools=("no-cash",))
     if len(pos) != 1 or not o.get("card"):
-        sys.exit("uso: buffet pay-bill <valor> --card Inter [--from Nubank] [--date d] [--note t] [--debt <id>] [--no-cash]")
+        sys.exit("uso: buffet pay-bill <valor> --card Inter [--month AAAA-MM] [--from Nubank] [--date d] [--note t] [--debt <id>] [--no-cash]")
+    card = pbank(o["card"])
     paid_from = pbank(o["from"]) if o.get("from") else None
-    insert = ("insert into public.buffet_card_payments (date, amount, card_bank, paid_from, debt_id, note, source) values ("
-              f"{lit(pdate(o.get('date')))}, {pmoney(pos[0])}, {lit(pbank(o['card']))}, {lit(paid_from)}, "
+    month = pmonth(o["month"]) if o.get("month") else None
+    if not month and cycle(config(), card):
+        open_ = [b for b in card_bills(card) if not b["paid"]]
+        month = open_[0]["month"] if open_ else None
+    insert = ("insert into public.buffet_card_payments (date, amount, card_bank, paid_from, bill_month, debt_id, note, source) values ("
+              f"{lit(pdate(o.get('date')))}, {pmoney(pos[0])}, {lit(card)}, {lit(paid_from)}, {lit(month)}, "
               f"{lit(o.get('debt'))}, {lit(o.get('note'))}, 'bot') returning {BILL_COLS}")
-    if o.get("no-cash") or not paid_from:
-        table(bot(insert))
-        return
-    # Um comando só: insere e, se a conta pagadora for a do saldo, debita o cash_balance (atômico).
-    rows = bot(f"with p as ({insert}), c as (update public.buffet_app_config c set cash_balance = c.cash_balance - p.amount, "
-               "updated_at = now() from p where lower(p.paid_from) = lower(c.cash_balance_bank) and c.cash_balance is not null "
-               "returning c.cash_balance) "
-               f"select p.*, (select cash_balance from c) as cash_balance from p")
+    ctes = [f"p as ({insert})"]
+    extra = []
+    if month:
+        # Fatura informada (kind='bill') desse mês fica paga; planos do cartão contam as parcelas até esse mês como pagas.
+        ctes.append("b as (update public.buffet_debts d set installments_paid = d.installments_total from p "
+                    "where d.kind = 'bill' and lower(d.card) = lower(p.card_bank) and d.first_bill = p.bill_month returning d.id)")
+        ctes.append("i as (update public.buffet_debts d set installments_paid = greatest(d.installments_paid, (select count(*) "
+                    "from public.buffet_transactions x where x.debt_id = d.id and x.bill_month <= p.bill_month)) from p "
+                    "where d.kind = 'installments' and lower(d.card) = lower(p.card_bank) returning d.id)")
+        extra += ["(select count(*) from i) as plans_updated"]
+    if paid_from and not o.get("no-cash"):
+        # Se a conta pagadora for a do saldo, debita o cash_balance (atômico).
+        ctes.append("c as (update public.buffet_app_config c set cash_balance = c.cash_balance - p.amount, updated_at = now() "
+                    "from p where lower(p.paid_from) = lower(c.cash_balance_bank) and c.cash_balance is not null returning c.cash_balance)")
+        extra += ["(select cash_balance from c) as cash_balance"]
+    rows = bot(f"with {', '.join(ctes)} select p.*{''.join(', ' + e for e in extra)} from p")
     table(rows)
-    if rows and rows[0].get("cash_balance") is None:
+    if month:
+        print(f"fatura {card} {mon(month)} paga", file=sys.stderr)
+    if paid_from and not o.get("no-cash") and rows and rows[0].get("cash_balance") is None:
         print(f"aviso: {paid_from} não é a conta do saldo (cash_balance_bank); cash_balance não mudou", file=sys.stderr)
+
+
+# ---------------------------------------------------------------- cartões e faturas
+def card_bills(card):
+    """Faturas do cartão (passadas sem pagamento, aberta, futuras): itens + informado + pagamentos, por mês."""
+    items = bot("select id, date, amount, merchant, installment_no, debt_id, subscription_id, bill_month from public.buffet_transactions "
+                f"where method = 'credit' and lower(bank) = lower({lit(card)}) and bill_month is not null order by date, created_at")
+    plans = {r["id"]: r for r in bot("select id, installments_total from public.buffet_debts where kind = 'installments'")}
+    reported = bot("select id, first_bill, installment_amount, installments_paid, installments_total from public.buffet_debts "
+                   f"where kind = 'bill' and lower(card) = lower({lit(card)})")
+    pays = bot(f"select date, amount, bill_month from public.buffet_card_payments where lower(card_bank) = lower({lit(card)}) "
+               "and bill_month is not null")
+    months = sorted({r["bill_month"] for r in items} | {r["first_bill"] for r in reported if r["first_bill"]})
+    out = []
+    for m in months:
+        its = [r for r in items if r["bill_month"] == m]
+        for r in its:
+            r["of"] = (plans.get(r["debt_id"]) or {}).get("installments_total")
+        rep = next((r for r in reported if r["first_bill"] == m), None)
+        detailed = round(sum(float(r["amount"]) for r in its), 2)
+        rep_v = float(rep["installment_amount"]) if rep else None
+        total = max(rep_v or 0, detailed)
+        paid = [p for p in pays if p["bill_month"] == m]
+        is_paid = bool(paid) or bool(rep and rep["installments_paid"] >= rep["installments_total"])
+        out.append({"month": m, "items": its, "detailed": detailed, "reported": rep_v, "total": round(total, 2),
+                    "undetailed": round(total - detailed, 2), "paid": is_paid, "payments": paid,
+                    "inst": round(sum(float(r["amount"]) for r in its if r["debt_id"]), 2)})
+    return out
+
+
+def credit_cards(cfg):
+    return [b["name"] for b in cfg.get("banks") or [] if (b.get("credit") or {}).get("closing_day")]
+
+
+def cmd_card(a):
+    if not a or a[0] != "set":
+        sys.exit("uso: buffet card set <cartão> --closing 4 --due 11")
+    pos, o = opts(a[1:], flags=("closing", "due"))
+    if len(pos) != 1 or not o.get("closing") or not o.get("due"):
+        sys.exit("uso: buffet card set <cartão> --closing 4 --due 11")
+    closing, due = int(o["closing"]), int(o["due"])
+    if not (1 <= closing <= 31 and 1 <= due <= 31):
+        sys.exit("erro: dias entre 1 e 31")
+    card = pbank(pos[0])
+    credit = json.dumps({"closing_day": closing, "due_day": due})
+    rows = bot("update public.buffet_app_config c set banks = (select jsonb_agg(case when lower(b->>'name') = lower("
+               f"{lit(card)}) then b || jsonb_build_object('credit', {lit(credit)}::jsonb) else b end order by o) "
+               "from jsonb_array_elements(c.banks) with ordinality as e(b, o)), updated_at = now() "
+               f"where exists (select 1 from jsonb_array_elements(c.banks) b where lower(b->>'name') = lower({lit(card)})) "
+               "returning c.banks")
+    if not rows:
+        sys.exit(f"erro: banco {card} não está em buffet_app_config.banks")
+    print(f"{card}: fecha dia {closing}, vence dia {due}")
+
+
+def cmd_bill(a):
+    if a and a[0] == "set":
+        return cmd_bill_set(a[1:])
+    _, o = opts(a, flags=("card", "month"))
+    cfg = config()
+    card = pbank(o["card"]) if o.get("card") else (credit_cards(cfg) or ["Nubank"])[0]
+    cy = need_cycle(cfg, card)
+    month = pmonth(o["month"]) if o.get("month") else bill_month(cy, today().isoformat())
+    b = next((b for b in card_bills(card) if b["month"] == month), None)
+    opened = bill_month(cy, today().isoformat())
+    state = "PAGA" if b and b["paid"] else "ABERTA" if month == opened else "FECHADA" if month < opened else "FUTURA"
+    print(f"{card} · fatura {mon(month)} · {state} · fecha {close_date(cy, month):%d/%m} · vence {due_date(cy, month):%d/%m}")
+    if not b:
+        print("(nada nessa fatura)")
+        return
+    table([{"data": dm(r["date"]), "merchant": r["merchant"] + (" ↻" if r.get("subscription_id") else ""),
+            "parcela": f"{r['installment_no']}/{r['of']}" if r["installment_no"] else "–",
+            "valor": brl(float(r["amount"])).replace("R$ ", "")} for r in b["items"]])
+    line = f"\ndetalhado {brl(b['detailed'])}"
+    if b["reported"] is not None:
+        line += f" · não detalhado {brl(b['undetailed'])} · total {brl(b['total'])} (informado {brl(b['reported'])})"
+    else:
+        line += f" · total {brl(b['total'])}"
+    print(line)
+    for p in b["payments"]:
+        print(f"pago {brl(float(p['amount']))} em {dm(p['date'])}")
+    if not b["paid"] and cfg.get("cash_balance") is not None and cfg.get("cash_balance_bank"):
+        cb = float(cfg["cash_balance"])
+        print(f"saldo {cfg['cash_balance_bank']} {brl(cb)} → {brl(cb - b['total'])} depois de pagar")
+
+
+def cmd_bills(a):
+    _, o = opts(a, flags=("card",))
+    cfg = config()
+    cards = [pbank(o["card"])] if o.get("card") else credit_cards(cfg)
+    for card in cards:
+        cy = need_cycle(cfg, card)
+        opened = bill_month(cy, today().isoformat())
+        bills = [b for b in card_bills(card) if not b["paid"]]
+        print(f"{card} · fecha dia {cy[0]} · vence dia {cy[1]}")
+        table([{"fatura": mon(b["month"]), "vence": f"{due_date(cy, b['month']):%d/%m}",
+                "estado": "aberta" if b["month"] == opened else "fechada" if b["month"] < opened else "futura",
+                "parcelas": brl(b["inst"]).replace("R$ ", ""), "à vista": brl(round(b["detailed"] - b["inst"], 2)).replace("R$ ", ""),
+                "não detalhado": brl(b["undetailed"]).replace("R$ ", "") if b["reported"] is not None else "–",
+                "total": brl(b["total"]).replace("R$ ", "")} for b in bills])
+        if bills:
+            now = [b for b in bills if b["month"] <= opened]
+            later = [b for b in bills if b["month"] > opened]
+            print(f"\ncomprometido {brl(sum(b['total'] for b in bills))} · em aberto {brl(sum(b['total'] for b in now))} · "
+                  f"próximas {brl(sum(b['total'] for b in later))}" + (f" · livre de parcelas depois de {mon(bills[-1]['month'])}" if later else ""))
+        print()
+
+
+def cmd_bill_set(a):
+    pos, o = opts(a, flags=("card", "month"))
+    if len(pos) != 1 or not o.get("card"):
+        sys.exit("uso: buffet bill set <valor> --card Nubank [--month AAAA-MM]")
+    cfg = config()
+    card = pbank(o["card"])
+    cy = need_cycle(cfg, card)
+    month = pmonth(o["month"]) if o.get("month") else bill_month(cy, today().isoformat())
+    v = pmoney(pos[0])
+    rows = bot(f"with u as (update public.buffet_debts set installment_amount = {v} where kind = 'bill' and lower(card) = lower({lit(card)}) "
+               f"and first_bill = {lit(month)} returning id, installment_amount), "
+               "i as (insert into public.buffet_debts (description, bank, card, kind, installment_amount, installments_paid, "
+               f"installments_total, due_day, first_bill, source) select {lit('Fatura ' + card)}, {lit(card)}, {lit(card)}, 'bill', {v}, 0, 1, "
+               f"{cy[1]}, {lit(month)}, 'bot' where not exists (select 1 from u) returning id, installment_amount) "
+               "select * from u union all select * from i")
+    print(f"fatura {card} {mon(month)}: informado {brl(v)} ({rows[0]['id']})")
+
+
+def cmd_plans(a):
+    rows = bot("select d.id, d.description, d.card, d.total_amount, d.installments_total, d.installments_paid, "
+               "count(t.id) filter (where t.installment_no > d.installments_paid) as left_n, "
+               "sum(t.amount) filter (where t.installment_no > d.installments_paid) as left_v, "
+               "min(t.bill_month) filter (where t.installment_no > d.installments_paid) as next_bill, max(t.bill_month) as last_bill "
+               "from public.buffet_debts d left join public.buffet_transactions t on t.debt_id = d.id "
+               "where d.kind = 'installments' group by d.id order by max(t.bill_month)")
+    table([{"id": r["id"][:8], "plano": r["description"], "cartão": r["card"],
+            "compra": brl(float(r["total_amount"])) if r["total_amount"] else "–",
+            "pagas": f"{r['installments_paid']}/{r['installments_total']}", "faltam": brl(float(r["left_v"] or 0)),
+            "próxima": mon(r["next_bill"]) if r["next_bill"] else "–",
+            "última": mon(r["last_bill"]) if r["last_bill"] else "–"} for r in rows if (r["left_n"] or 0) > 0])
+
+
+def cmd_del_plan(a):
+    pos, o = opts(a, flags=("from",))
+    if len(pos) != 1:
+        sys.exit("uso: buffet del-plan <id> [--from AAAA-MM]")
+    if o.get("from"):
+        m = pmonth(o["from"])
+        rows = bot(f"with x as (delete from public.buffet_transactions where debt_id = {lit(pos[0])} and bill_month >= {lit(m)} "
+                   "returning amount) update public.buffet_debts d set installments_total = d.installments_total - (select count(*) from x), "
+                   f"total_amount = d.total_amount - (select coalesce(sum(amount), 0) from x) where d.id = {lit(pos[0])} "
+                   "returning d.id, d.description, d.installments_total, d.total_amount")
+        if not rows:
+            sys.exit(f"erro: plano {pos[0]} não encontrado")
+        print(f"{rows[0]['description']}: parcelas de {mon(m)} em diante apagadas; plano agora {rows[0]['installments_total']}x, "
+              f"{brl(float(rows[0]['total_amount']))}")
+        return
+    rows = bot(f"delete from public.buffet_debts where id = {lit(pos[0])} and kind <> 'bill' returning id, description")
+    if not rows:
+        sys.exit(f"erro: plano {pos[0]} não encontrado")
+    print(f"{rows[0]['description']}: plano e parcelas apagados")
 
 
 def cmd_del_bill(a):
@@ -514,9 +836,13 @@ def cmd_sub_charge(a):
         sys.exit(f"erro: {sub['name']} está cancelada (buffet sub resume)")
     amount = pmoney(o["amount"]) if o.get("amount") else float(sub["amount"])
     bank = pbank(o["bank"]) if o.get("bank") else sub.get("bank")
-    insert = ("insert into public.buffet_transactions (date, amount, merchant, category, bank, note, source, subscription_id) values ("
-              f"{lit(pdate(o.get('date')))}, {amount}, {lit(sub['name'])}, {lit(sub['category'])}, {lit(bank)}, "
-              f"{lit(o.get('note'))}, 'bot', {lit(sub['id'])}) returning {TX_COLS}, subscription_id")
+    date = pdate(o.get("date"))
+    # Cartão com ciclo → cobrança no crédito, na fatura do ciclo (assinatura não mexe no caixa).
+    cy = cycle(config(), bank) if bank else None
+    method, bill = ("credit", bill_month(cy, date)) if cy else (None, None)
+    insert = ("insert into public.buffet_transactions (date, amount, merchant, category, bank, method, bill_month, note, source, "
+              f"subscription_id) values ({lit(date)}, {amount}, {lit(sub['name'])}, {lit(sub['category'])}, {lit(bank)}, "
+              f"{lit(method)}, {lit(bill)}, {lit(o.get('note'))}, 'bot', {lit(sub['id'])}) returning {TX_COLS}, subscription_id")
     rows = bot(f"with t as ({insert}), {ADVANCE_FROM_T} select t.*, (select next_due from u) as next_due from t")
     table(rows, TX_COLS.split(", ") + ["next_due"])
     print(f"\n{sub['name']}: próxima {dm(rows[0]['next_due'])}")
@@ -640,7 +966,8 @@ def cmd_sub(a):
 
 
 COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-jsonl": cmd_import_jsonl,
-            "pay-bill": cmd_pay_bill, "del-bill": cmd_del_bill, "sub": cmd_sub}
+            "pay-bill": cmd_pay_bill, "del-bill": cmd_del_bill, "sub": cmd_sub, "card": cmd_card, "bill": cmd_bill,
+            "bills": cmd_bills, "plans": cmd_plans, "del-plan": cmd_del_plan}
 
 
 def main(a):

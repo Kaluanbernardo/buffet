@@ -4,7 +4,7 @@
  */
 import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { BudgetGroup, BuffetData, Subscription } from './types'
+import type { BudgetGroup, BuffetData, Subscription, Transaction } from './types'
 import { seed } from './seed'
 import { setValuesHidden, valuesHidden } from '../lib/format'
 import { supabase } from '../lib/supabase'
@@ -123,15 +123,20 @@ export function supabaseStore(sb: SupabaseClient): DataStore {
       const data = migrate({
         subscriptionsReady: ready,
         transactions: tx.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), merchant: str(r.merchant), category: str(r.category), bank: opt(r.bank), note: opt(r.note),
-          ...(r.subscription_id ? { subscription_id: str(r.subscription_id) } : {}) })),
+          ...(r.subscription_id ? { subscription_id: str(r.subscription_id) } : {}),
+          // Read-only in the app (the chat writes them): not in toRow, so the app's upserts never clear them.
+          ...(r.method ? { method: str(r.method) as Transaction['method'] } : {}), ...(r.bill_month ? { bill_month: str(r.bill_month) } : {}),
+          ...(r.debt_id ? { debt_id: str(r.debt_id), installment_no: num(r.installment_no) } : {}) })),
         subscriptions: subs.map((r) => ({ id: str(r.id), name: str(r.name), amount: num(r.amount), cycle: r.cycle === 'yearly' ? 'yearly' : 'monthly',
           next_due: str(r.next_due), bank: opt(r.bank), category: str(r.category) || 'Assinaturas',
           status: r.status === 'paused' || r.status === 'canceled' ? r.status : 'active', remind_days: num(r.remind_days),
           match: opt(r.match), cancel_hint: opt(r.cancel_hint), note: opt(r.note), started_on: opt(r.started_on), canceled_on: opt(r.canceled_on) })),
-        cardPayments: bills.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), card_bank: str(r.card_bank), paid_from: opt(r.paid_from), note: opt(r.note) })),
+        cardPayments: bills.map((r) => ({ id: str(r.id), date: str(r.date), amount: num(r.amount), card_bank: str(r.card_bank), paid_from: opt(r.paid_from), note: opt(r.note), bill_month: opt(r.bill_month) })),
         budgets: budgets.map((r) => ({ category: str(r.category), monthly_limit: num(r.monthly_limit), ...(r.group_name ? { group: r.group_name as BudgetGroup } : {}) })),
         debts: debts.map((r) => ({ id: str(r.id), description: str(r.description), bank: str(r.bank), installment_amount: num(r.installment_amount),
-          installments_paid: num(r.installments_paid), installments_total: num(r.installments_total) || 1, due_day: num(r.due_day) || 1 })),
+          installments_paid: num(r.installments_paid), installments_total: num(r.installments_total) || 1, due_day: num(r.due_day) || 1,
+          kind: r.kind === 'bill' || r.kind === 'loan' ? r.kind : 'installments', card: opt(r.card),
+          total_amount: r.total_amount == null ? undefined : num(r.total_amount), purchase_date: opt(r.purchase_date), first_bill: opt(r.first_bill) })),
         reserves: reserves.map((r) => ({ id: str(r.id), name: str(r.name), target: num(r.target), current: num(r.current) })),
         investments: investments.map((r) => ({ id: str(r.id), name: str(r.name), kind: str(r.kind), institution: str(r.institution), amount: num(r.amount) })),
         incomes: Object.fromEntries(incomes.map((r) => [str(r.month), num(r.amount)])),

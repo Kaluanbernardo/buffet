@@ -1,5 +1,5 @@
-import type { Budget, BudgetGroup, BuffetData, Debt, SubCycle, Subscription, Transaction } from './types'
-import { addDays, monthClock, monthKey, parseISO, today } from '../lib/format'
+import type { Bank, Budget, BudgetGroup, BuffetData, CardPayment, Debt, SubCycle, Subscription, Transaction } from './types'
+import { addDays, monthClock, monthKey, parseISO, shiftMonth, today } from '../lib/format'
 
 const cents = (v: number) => Math.round(v * 100) / 100
 
@@ -50,6 +50,95 @@ const DEFAULT_GROUP: Record<string, BudgetGroup> = {
 export const groupOf = (b: Budget): BudgetGroup => b.group ?? DEFAULT_GROUP[b.category] ?? 'lifestyle'
 
 export const isOpen = (d: Debt) => d.installments_paid < d.installments_total
+
+/**
+ * Rows already spent (date <= today). Installments are materialized one row per month (option A), so later parcels sit
+ * in the table with future dates: lists of "what happened" (Hoje, Gastos) read only these; the rest is "agendada".
+ */
+export const isPosted = (t: Transaction, ref = today()) => t.date <= ref
+export const posted = (data: BuffetData): BuffetData => {
+  const t = today()
+  return { ...data, transactions: data.transactions.filter((x) => isPosted(x, t)) }
+}
+
+// ---------------------------------------------------------------- cartões e faturas
+
+type Cycle = NonNullable<Bank['credit']>
+export const creditCards = (data: BuffetData) => data.config.banks.filter((b): b is Bank & { credit: Cycle } => Boolean(b.credit?.closing_day && b.credit?.due_day))
+
+/**
+ * Bill (due month "AAAA-MM") a credit purchase on `iso` lands in: the first closing after the date (on the closing day
+ * it already goes to the next one); due after closing in the calendar → same month, else the month after.
+ * Mirrors public.buffet_bill_month (supabase/migrations/*_buffet_installments_bills.sql) — keep the two equal.
+ */
+export function billMonth(c: Cycle, iso: string) {
+  const day = Number(iso.slice(8, 10))
+  return shiftMonth(iso.slice(0, 7), (day < c.closing_day ? 0 : 1) + (c.due_day > c.closing_day ? 0 : 1))
+}
+const onDay = (mk: string, d: number) => { const [y, m] = mk.split('-').map(Number); return iso(y, m - 1, Math.min(d, lastDay(y, m - 1))) }
+export const billDue = (c: Cycle, mk: string) => onDay(mk, c.due_day)
+export const billClose = (c: Cycle, mk: string) => onDay(c.due_day > c.closing_day ? mk : shiftMonth(mk, -1), c.closing_day)
+
+export type BillState = 'paid' | 'closed' | 'open' | 'future'
+export interface Bill {
+  card: string; month: string; due: string; close: string; state: BillState
+  /** Credit rows with this bill_month (à vista + installments). */
+  items: Transaction[]; detailed: number; installments: number
+  /** What the bank's app shows (debts kind='bill'), when told. */
+  reported: number | null; reportedDebt?: Debt
+  /** max(reported, detailed) — never the two added. */
+  total: number; undetailed: number
+  payments: CardPayment[]
+  /** Active subscriptions on this card whose next charge falls in this bill and isn't logged yet: forecast, never summed. */
+  forecast: Subscription[]
+}
+
+const sum = (xs: { amount: number }[]) => cents(xs.reduce((s, x) => s + x.amount, 0))
+
+/** Every bill of `card` that has something in it, oldest first. Paid = a payment for the month, or reported debt marked paid. */
+export function cardBills(data: BuffetData, card: string, c: Cycle, ref = today()): Bill[] {
+  const same = (v?: string) => (v ?? '').toLowerCase() === card.toLowerCase()
+  const items = data.transactions.filter((t) => t.method === 'credit' && t.bill_month && same(t.bank))
+  const reported = data.debts.filter((d) => d.kind === 'bill' && d.first_bill && same(d.card))
+  const forecast = data.subscriptions.filter((s) => s.status === 'active' && same(s.bank))
+  const opened = billMonth(c, ref)
+  const months = [...new Set([...items.map((t) => t.bill_month!), ...reported.map((d) => d.first_bill!)])].sort()
+  return months.map((m) => {
+    const its = items.filter((t) => t.bill_month === m).sort((a, b) => a.date.localeCompare(b.date))
+    const rep = reported.find((d) => d.first_bill === m)
+    const detailed = sum(its)
+    const total = cents(Math.max(rep?.installment_amount ?? 0, detailed))
+    const payments = data.cardPayments.filter((p) => p.bill_month === m && same(p.card_bank))
+    const paid = payments.length > 0 || Boolean(rep && !isOpen(rep))
+    return {
+      card, month: m, due: billDue(c, m), close: billClose(c, m), items: its, detailed, installments: sum(its.filter((t) => t.debt_id)),
+      reported: rep ? rep.installment_amount : null, reportedDebt: rep, total, undetailed: cents(total - detailed), payments,
+      state: paid ? 'paid' : m < opened ? 'closed' : m === opened ? 'open' : 'future',
+      forecast: forecast.filter((s) => billMonth(c, s.next_due) === m && !its.some((t) => t.subscription_id === s.id && t.date === s.next_due)),
+    }
+  })
+}
+
+/** All credit cards' bills, plus what's committed: every unpaid bill's total (reported or detailed, never both). */
+export function bills(data: BuffetData) {
+  const cards = creditCards(data).map((b) => ({ name: b.name, cycle: b.credit, bills: cardBills(data, b.name, b.credit) }))
+  const unpaid = cards.flatMap((c) => c.bills.filter((b) => b.state !== 'paid'))
+  const now = unpaid.filter((b) => b.state !== 'future')
+  const later = unpaid.filter((b) => b.state === 'future')
+  const lastInst = unpaid.filter((b) => b.installments > 0).map((b) => b.month).sort().pop() ?? null
+  return { cards, unpaid, committed: sum(unpaid.map((b) => ({ amount: b.total }))), now: sum(now.map((b) => ({ amount: b.total }))),
+    later: sum(later.map((b) => ({ amount: b.total }))), freeAfter: lastInst }
+}
+
+/**
+ * An installment plan from its materialized rows: paid = installment_no <= installments_paid (pay-bill keeps it), next
+ * unpaid parcel, what's left and the last bill. Plans without rows (old/app-made) fall back to `payoff`.
+ */
+export function planOf(d: Debt, tx: Transaction[]) {
+  const rows = tx.filter((t) => t.debt_id === d.id).sort((a, b) => (a.installment_no ?? 0) - (b.installment_no ?? 0))
+  const left = rows.filter((t) => (t.installment_no ?? 0) > d.installments_paid)
+  return { rows, left, next: left[0] ?? null, owed: sum(left), last: rows[rows.length - 1]?.bill_month ?? null, total: d.total_amount ?? sum(rows) }
+}
 
 /** Days until the next due date, from today (0 = vence hoje). */
 export function daysUntilDue(dueDay: number) {

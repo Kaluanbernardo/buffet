@@ -3,12 +3,12 @@ import { money } from '../lib/format'
 import { ChevronLeft, ChevronRight, Eye, EyeOff, Moon, Sun } from 'lucide-react'
 import { useTheme } from '../lib/theme'
 import {
-  UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shapes, X, type LucideIcon,
+  UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shirt, Shapes, X, type LucideIcon,
 } from 'lucide-react'
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
   Alimentação: UtensilsCrossed, Transporte: Bus, Moradia: House, Saúde: HeartPulse,
-  Lazer: Ticket, Assinaturas: Repeat, Educação: GraduationCap,
+  Lazer: Ticket, Assinaturas: Repeat, Educação: GraduationCap, Vestimenta: Shirt,
 }
 
 /**
@@ -19,6 +19,7 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
 const CAT_COLORS: Record<string, string> = {
   Alimentação: '#3987e5', Transporte: '#d95926', Moradia: '#199e70',
   Saúde: '#c98500', Lazer: '#d55181', Assinaturas: '#9085e9',
+  Vestimenta: '#5aa8a0', // distinto do neutro de Outros (#5b6675)
 }
 export const NEUTRAL_MARK = '#5b6675'
 export const catColor = (category: string) => CAT_COLORS[category] ?? NEUTRAL_MARK

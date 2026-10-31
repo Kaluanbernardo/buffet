@@ -7,8 +7,9 @@ RLS e grants mínimos do bot valem. Toda escrita leva source='bot'; user_id cai 
 Datas: AAAA-MM-DD, 'hoje', 'ontem' ou dd/mm. Valores: 107.56 ou 107,56.
 
 GASTOS
-  buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t]
-        lança um gasto (padrão: hoje); imprime o id
+  buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t] [--sub <sub> | --no-sub]
+        lança um gasto (padrão: hoje); imprime o id. Sem --sub, vincula sozinho se o merchant bater com o
+        match de UMA assinatura ativa com próxima cobrança a até ±7 dias (avisa no stderr; --no-sub evita)
   buffet del <id>                             apaga um lançamento
   buffet list [--date d | --month AAAA-MM]    lançamentos (padrão: mês atual) + total
   buffet import-jsonl <arquivo>               importa data/expenses.jsonl (idempotente pelo id)
@@ -19,6 +20,23 @@ FATURAS (buffet_card_payments — não são gasto, ficam fora de todos os totais
         debita o cash_balance no mesmo comando (--no-cash pula)
   buffet del-bill <id> [--restore-cash]       apaga um pagamento; --restore-cash devolve ao saldo
 
+ASSINATURAS (buffet_subscriptions — compromisso, nunca soma; o gasto real continua em buffet_transactions)
+  <sub> = id ou trecho do nome (único, sem diferenciar acentos/maiúsculas)
+  buffet sub add [<valor>] --name X [--cycle mensal|anual] [--next d | --day N] [--card b] [--category Assinaturas]
+                 [--remind 2] [--match t] [--cancel-hint t] [--note t] [--from-tx <id>]
+        cria (próxima padrão: hoje + 1 ciclo); --from-tx vincula um gasto existente, usa o valor/merchant dele
+        se faltarem e calcula a próxima = data dele + 1 ciclo; com --card corrige o bank do gasto
+  buffet sub list [--all]                     ativas (ou todas) com próxima, estado e total/mês
+  buffet sub charge <sub> [--date d] [--amount v] [--bank b] [--note t]
+        lança o gasto da cobrança (vinculado) e avança a próxima — um comando
+  buffet sub link <tx-id> <sub>               vincula um gasto existente e avança a próxima
+  buffet sub unlink <tx-id>                   desfaz o vínculo (não mexe na próxima)
+  buffet sub skip <sub>                       "não cobrou": avança a próxima sem gasto
+  buffet sub edit <sub> [--amount v] [--next d] [--card b] [--cycle c] [--remind n] [--name X]
+                  [--category c] [--match t] [--cancel-hint t] [--note t]
+  buffet sub pause|resume|cancel <sub> [--date d]   resume rola a próxima até >= hoje; cancel guarda canceled_on
+  buffet sub due [--days 7]                   cobra nos próximos N dias + não apareceu + preço mudou + renovação anual
+
 SQL
   buffet sql "<SELECT ...>"                   SQL livre como bot (um comando)
   buffet admin-sql "<SQL>"                    como postgres (evitar; só manutenção)
@@ -26,7 +44,7 @@ SQL
 Token: $SUPABASE_ACCESS_TOKEN ou /home/box/.secrets/supabase_access_token (nunca impresso).
 BUFFET_ROLLBACK=1 executa cada comando e desfaz (teste sem gravar).
 """
-import datetime as dt, json, os, re, sys, urllib.error, urllib.request
+import datetime as dt, json, os, re, sys, unicodedata, urllib.error, urllib.request
 from zoneinfo import ZoneInfo
 
 REF = os.environ.get("SUPABASE_PROJECT_REF", "qlphmxjehsexuxspspaw")
@@ -46,6 +64,10 @@ def token():
     return t
 
 
+class SqlError(Exception):
+    pass
+
+
 def run(query):
     req = urllib.request.Request(f"https://api.supabase.com/v1/projects/{REF}/database/query",
         data=json.dumps({"query": query}).encode(), method="POST",
@@ -57,7 +79,7 @@ def run(query):
             msg = json.loads(e.read()).get("message", "")
         except Exception:
             msg = str(e)
-        sys.exit(f"erro {e.code}: {msg}")
+        raise SqlError(f"erro {e.code}: {msg}")
 
 
 # Bloqueia tentativas de sair do role bot dentro da mesma requisição.
@@ -182,17 +204,28 @@ BILL_COLS = "id, date, amount, card_bank, paid_from, note, source"
 
 
 def cmd_expense(a):
-    pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note"))
+    pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note", "sub"), bools=("no-sub",))
     if len(pos) != 1 or not o.get("merchant") or not o.get("category"):
-        sys.exit("uso: buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t]")
+        sys.exit("uso: buffet expense <valor> --merchant X --category Y [--date d] [--bank b] [--note t] [--sub <sub> | --no-sub]")
+    if o.get("sub") and o.get("no-sub"):
+        sys.exit("erro: use --sub ou --no-sub, não os dois")
     if re.search(r"fatura", f"{o['merchant']} {o.get('note') or ''}", re.I):
         print("aviso: parece pagamento de fatura; isso não é gasto. Use: buffet pay-bill <valor> --card <banco> --from <conta>",
               file=sys.stderr)
-    rows = bot(
-        "insert into public.buffet_transactions (date, amount, merchant, category, bank, note, source) values ("
-        f"{lit(pdate(o.get('date')))}, {pmoney(pos[0])}, {lit(o['merchant'])}, {lit(pcategory(o['category']))}, "
-        f"{lit(o.get('bank'))}, {lit(o.get('note'))}, 'bot') returning {TX_COLS}")
-    table(rows)
+    date, amount = pdate(o.get("date")), pmoney(pos[0])
+    sub = resolve_sub(o["sub"]) if o.get("sub") else None if o.get("no-sub") else auto_sub(o["merchant"], date)
+    bank = pbank(o["bank"]) if o.get("bank") else (sub or {}).get("bank")
+    insert = ("insert into public.buffet_transactions (date, amount, merchant, category, bank, note, source"
+              + (", subscription_id" if sub else "") + ") values ("
+              f"{lit(date)}, {amount}, {lit(o['merchant'])}, {lit(pcategory(o['category']))}, {lit(bank)}, {lit(o.get('note'))}, 'bot'"
+              + (f", {lit(sub['id'])}) returning {TX_COLS}, subscription_id" if sub else f") returning {TX_COLS}"))
+    if not sub:
+        table(bot(insert))
+        return
+    rows = bot(f"with t as ({insert}), {ADVANCE_FROM_T} select t.*, (select next_due from u) as next_due from t")
+    table(rows, TX_COLS.split(", ") + ["next_due"])
+    print(f"vinculado à assinatura {sub['name']}; próxima {dm(rows[0]['next_due'])}", file=sys.stderr)
+    price_warn(sub, amount)
 
 
 def cmd_del(a):
@@ -215,7 +248,12 @@ def cmd_list(a):
         if not re.fullmatch(r"\d{4}-\d{2}", m):
             sys.exit("erro: --month no formato AAAA-MM")
         where = f"to_char(date, 'YYYY-MM') = {lit(m)}"
-    rows = bot(f"select {TX_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
+    try:   # ↻ nome da assinatura ligada; sem a migration de assinaturas, a lista simples
+        rows = bot(f"select {', '.join('t.' + c for c in TX_COLS.split(', '))}, '↻ ' || s.name as sub "
+                   "from public.buffet_transactions t left join public.buffet_subscriptions s on s.id = t.subscription_id "
+                   f"where {where.replace('date', 't.date')} order by t.date desc, t.created_at desc")
+    except SqlError:
+        rows = bot(f"select {TX_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
     table(rows)
     if rows:
         print(f"\n{len(rows)} lançamento(s) · total {brl(sum(float(r['amount']) for r in rows))}")
@@ -290,9 +328,319 @@ def cmd_import_jsonl(a):
     table(rows)
     print(f"\nimportados: {len(rows)} · já existiam: {len(values) - len(rows)}")
 
+# ---------------------------------------------------------------- assinaturas
+SUB_COLS = ("id, name, amount, cycle, next_due, bank, category, status, remind_days, match, cancel_hint, note, "
+            "started_on, canceled_on")
+CYCLES = {"mensal": "monthly", "monthly": "monthly", "mes": "monthly", "mês": "monthly", "m": "monthly",
+          "anual": "yearly", "yearly": "yearly", "ano": "yearly", "a": "yearly"}
+CYCLE_PT = {"monthly": "mês", "yearly": "ano"}
+STATUS_PT = {"active": "ativa", "paused": "pausada", "canceled": "cancelada"}
+WEEKDAYS = ("seg", "ter", "qua", "qui", "sex", "sáb", "dom")
+
+
+def anchor(alias="s"):
+    """Dia que ancora o ciclo (da 1ª cobrança); null → o dia da própria next_due (ver buffet_sub_advance)."""
+    return f"extract(day from {alias}.started_on)::int"
+
+
+# Avança a assinatura do gasto recém-gravado em `t` (CTE), uma cobrança = um ciclo.
+ADVANCE_FROM_T = ("u as (update public.buffet_subscriptions s set next_due = public.buffet_sub_advance(s.next_due, s.cycle, "
+                  f"{anchor()}, t.date), updated_at = now() from t where s.id = t.subscription_id returning s.next_due)")
+
+
+def norm(v):
+    return unicodedata.normalize("NFD", str(v or "")).encode("ascii", "ignore").decode().lower().strip()
+
+
+def pcycle(s):
+    c = CYCLES.get(norm(s))
+    if not c:
+        sys.exit("erro: --cycle mensal ou anual")
+    return c
+
+
+def dm(iso):
+    d = dt.date.fromisoformat(str(iso)[:10])
+    return f"{WEEKDAYS[d.weekday()]} {d:%d/%m}" + ("" if d.year == today().year else f"/{d.year}")
+
+
+def days_to(iso):
+    return (dt.date.fromisoformat(str(iso)[:10]) - today()).days
+
+
+def all_subs():
+    return bot(f"select {SUB_COLS} from public.buffet_subscriptions order by status = 'active' desc, next_due")
+
+
+def resolve_sub(key):
+    """id exato, nome exato ou trecho único do nome (sem acentos/maiúsculas); ativas ganham no empate."""
+    subs = all_subs()
+    hit = [r for r in subs if r["id"] == key] or [r for r in subs if norm(r["name"]) == norm(key)] \
+        or [r for r in subs if norm(key) in norm(r["name"])]
+    if len(hit) > 1:
+        hit = [r for r in hit if r["status"] == "active"] or hit
+    if not hit:
+        sys.exit(f"erro: assinatura '{key}' não encontrada (buffet sub list --all)")
+    if len(hit) > 1:
+        sys.exit(f"erro: '{key}' é ambíguo: " + ", ".join(f"{r['name']} ({r['id'][:8]})" for r in hit))
+    return hit[0]
+
+
+def auto_sub(merchant, date):
+    """Assinatura ativa cujo match (ou nome) aparece no merchant, com próxima a até ±7 dias de `date`. Uma só, ou nada."""
+    try:
+        subs = bot(f"select {SUB_COLS} from public.buffet_subscriptions where status = 'active'")
+    except SqlError:
+        return None                      # migration de assinaturas ainda não aplicada: lança sem vínculo
+    m = norm(merchant)
+    d = dt.date.fromisoformat(date)
+    hit = [r for r in subs if norm(r["match"] or r["name"]) and norm(r["match"] or r["name"]) in m
+           and abs((dt.date.fromisoformat(str(r["next_due"])) - d).days) <= 7]
+    if len(hit) > 1:
+        print("aviso: bate com mais de uma assinatura (" + ", ".join(r["name"] for r in hit) +
+              "); não vinculei. Use --sub <nome> ou buffet sub link", file=sys.stderr)
+        return None
+    return hit[0] if hit else None
+
+
+def price_warn(sub, amount):
+    if abs(float(sub["amount"]) - amount) >= 0.005:
+        print(f"aviso: {sub['name']} veio {brl(amount)} (era {brl(float(sub['amount']))}). "
+              f"Para atualizar: buffet sub edit {sub['id'][:8]} --amount " + f"{amount:.2f}".replace(".", ","), file=sys.stderr)
+
+
+def sub_line(r):
+    return (f"{r['name']} · {brl(float(r['amount']))}/{CYCLE_PT[r['cycle']]} · {r.get('bank') or 'sem cartão'} · "
+            f"próxima {dm(r['next_due'])} · {STATUS_PT[r['status']]}")
+
+
+def sub_state(r):
+    """Estado derivado (sem coluna): pausada/cancelada, não apareceu, venceu, cobra hoje, em N dias; + preço mudou."""
+    if r["status"] != "active":
+        st = STATUS_PT[r["status"]]
+    else:
+        n = days_to(r["next_due"])
+        st = ("não apareceu" if n < -3 else f"venceu há {-n} d" if n < 0 else "cobra hoje" if n == 0
+              else f"em {n} dias" + (" (lembrar)" if n <= int(r["remind_days"]) else ""))
+    if r.get("last_amount") is not None and abs(float(r["last_amount"]) - float(r["amount"])) >= 0.005:
+        st += f" · última veio {brl(float(r['last_amount']))}"
+    return st
+
+
+def per_month(r):
+    return float(r["amount"]) / (12 if r["cycle"] == "yearly" else 1)
+
+
+def subs_with_last(where="true"):
+    return bot(f"select {', '.join('s.' + c for c in SUB_COLS.split(', '))}, l.date as last_date, l.amount as last_amount, "
+               "(select count(*) from public.buffet_transactions c where c.subscription_id = s.id) as charges "
+               "from public.buffet_subscriptions s left join lateral (select t.date, t.amount from public.buffet_transactions t "
+               "where t.subscription_id = s.id order by t.date desc, t.created_at desc limit 1) l on true "
+               f"where {where} order by s.status = 'active' desc, s.next_due")
+
+
+def cmd_sub_add(a):
+    pos, o = opts(a, flags=("name", "cycle", "next", "day", "card", "category", "remind", "match", "cancel-hint", "note", "from-tx"))
+    tx = o.get("from-tx")
+    if len(pos) > 1 or (not pos and not tx) or (not o.get("name") and not tx):
+        sys.exit("uso: buffet sub add <valor> --name X [--cycle mensal|anual] [--next d | --day N] [--card b] "
+                 "[--category Assinaturas] [--remind 2] [--match t] [--cancel-hint t] [--note t] [--from-tx <id>]")
+    if o.get("next") and o.get("day"):
+        sys.exit("erro: use --next ou --day, não os dois")
+    cycle = pcycle(o.get("cycle", "mensal"))
+    amount = pmoney(pos[0]) if pos else None
+    remind = int(o.get("remind", 2))
+    if not 0 <= remind <= 30:
+        sys.exit("erro: --remind entre 0 e 30")
+    card = pbank(o["card"]) if o.get("card") else None
+    nxt = pdate(o["next"]) if o.get("next") else None
+    if o.get("day"):
+        n, t = int(o["day"]), today()
+        if not 1 <= n <= 31:
+            sys.exit("erro: --day entre 1 e 31")
+        last = lambda y, m: (dt.date(y + m // 12, m % 12 + 1, 1) - dt.timedelta(days=1)).day
+        d = dt.date(t.year, t.month, min(n, last(t.year, t.month)))
+        if d < t:
+            y, m = (t.year + 1, 1) if t.month == 12 else (t.year, t.month + 1)
+            d = dt.date(y, m, min(n, last(y, m)))
+        nxt = d.isoformat()
+    category = pcategory(o.get("category", "Assinaturas"))
+    cols = "name, amount, cycle, next_due, bank, category, remind_days, match, cancel_hint, note, started_on, source"
+    if tx:
+        # Um comando: cria a partir do gasto (valor/merchant/data dele quando faltarem) e vincula o gasto.
+        rows = bot(
+            f"with t as (select id, date, amount, merchant, bank from public.buffet_transactions where id = {lit(tx)}), "
+            f"s as (insert into public.buffet_subscriptions ({cols}) select coalesce({lit(o.get('name'))}, t.merchant), "
+            f"coalesce({amount if amount else 'null'}, t.amount), {lit(cycle)}, "
+            f"coalesce({lit(nxt)}::date, public.buffet_sub_advance(t.date, {lit(cycle)})), coalesce({lit(card)}, t.bank), "
+            f"{lit(category)}, {remind}, {lit(o.get('match'))}, {lit(o.get('cancel-hint'))}, {lit(o.get('note'))}, t.date, 'bot' "
+            f"from t returning {SUB_COLS}), "
+            "u as (update public.buffet_transactions x set subscription_id = s.id, bank = coalesce("
+            f"{lit(card)}, x.bank) from s where x.id = {lit(tx)} returning x.id, x.date, x.amount) "
+            "select s.*, u.id as tx_id, u.date as tx_date, u.amount as tx_amount from s, u")
+        if not rows:
+            sys.exit(f"erro: gasto {tx} não encontrado")
+        r = rows[0]
+        print(sub_line(r))
+        print(f"vinculado: {dm(r['tx_date'])} {brl(float(r['tx_amount']))} ({r['tx_id'][:8]}…)")
+        print(f"id: {r['id']}")
+        return
+    rows = bot(f"insert into public.buffet_subscriptions ({cols}) select {lit(o['name'])}, {amount}, {lit(cycle)}, n.d, "
+               f"{lit(card)}, {lit(category)}, {remind}, {lit(o.get('match'))}, {lit(o.get('cancel-hint'))}, {lit(o.get('note'))}, "
+               f"n.d, 'bot' from (select coalesce({lit(nxt)}::date, public.buffet_sub_advance({lit(today().isoformat())}::date, "
+               f"{lit(cycle)})) as d) n returning {SUB_COLS}")
+    print(sub_line(rows[0]))
+    print(f"id: {rows[0]['id']}")
+
+
+def cmd_sub_list(a):
+    _, o = opts(a, bools=("all",))
+    rows = subs_with_last("true" if o.get("all") else "s.status = 'active'")
+    out = [{"id": r["id"][:8], "nome": r["name"], "valor": brl(float(r["amount"])), "ciclo": CYCLE_PT[r["cycle"]],
+            "próxima": dm(r["next_due"]), "cartão": r.get("bank"), "estado": sub_state(r), "cobranças": r["charges"]} for r in rows]
+    table(out)
+    act = [r for r in rows if r["status"] == "active"]
+    if act:
+        m = sum(per_month(r) for r in act)
+        print(f"\n{len(act)} ativa(s) · {brl(m)}/mês estimado · {brl(m * 12)}/ano (compromisso, não é gasto)")
+
+
+def cmd_sub_charge(a):
+    pos, o = opts(a, flags=("date", "amount", "bank", "note"))
+    if len(pos) != 1:
+        sys.exit("uso: buffet sub charge <sub> [--date d] [--amount v] [--bank b] [--note t]")
+    sub = resolve_sub(pos[0])
+    if sub["status"] == "canceled":
+        sys.exit(f"erro: {sub['name']} está cancelada (buffet sub resume)")
+    amount = pmoney(o["amount"]) if o.get("amount") else float(sub["amount"])
+    bank = pbank(o["bank"]) if o.get("bank") else sub.get("bank")
+    insert = ("insert into public.buffet_transactions (date, amount, merchant, category, bank, note, source, subscription_id) values ("
+              f"{lit(pdate(o.get('date')))}, {amount}, {lit(sub['name'])}, {lit(sub['category'])}, {lit(bank)}, "
+              f"{lit(o.get('note'))}, 'bot', {lit(sub['id'])}) returning {TX_COLS}, subscription_id")
+    rows = bot(f"with t as ({insert}), {ADVANCE_FROM_T} select t.*, (select next_due from u) as next_due from t")
+    table(rows, TX_COLS.split(", ") + ["next_due"])
+    print(f"\n{sub['name']}: próxima {dm(rows[0]['next_due'])}")
+    price_warn(sub, amount)
+
+
+def cmd_sub_link(a):
+    if len(a) != 2:
+        sys.exit("uso: buffet sub link <tx-id> <sub>")
+    sub = resolve_sub(a[1])
+    rows = bot(f"with t as (update public.buffet_transactions set subscription_id = {lit(sub['id'])} where id = {lit(a[0])} "
+               f"and subscription_id is distinct from {lit(sub['id'])} returning {TX_COLS}, subscription_id), {ADVANCE_FROM_T} "
+               "select t.*, (select next_due from u) as next_due from t")
+    if not rows:
+        sys.exit(f"erro: gasto {a[0]} não encontrado ou já vinculado a {sub['name']}")
+    table(rows, TX_COLS.split(", ") + ["next_due"])
+    nd = rows[0]["next_due"]
+    print(f"\n{sub['name']}: próxima {dm(nd)}" + ("" if str(nd) != str(sub["next_due"]) else " (cobrança antiga: próxima não mudou)"))
+    price_warn(sub, float(rows[0]["amount"]))
+
+
+def cmd_sub_unlink(a):
+    if len(a) != 1:
+        sys.exit("uso: buffet sub unlink <tx-id>")
+    rows = bot(f"update public.buffet_transactions set subscription_id = null where id = {lit(a[0])} and subscription_id is not null "
+               f"returning {TX_COLS}")
+    if not rows:
+        sys.exit(f"erro: gasto {a[0]} não encontrado ou sem vínculo")
+    table(rows)
+    print("aviso: a próxima cobrança da assinatura não mudou (buffet sub edit <sub> --next d se precisar)", file=sys.stderr)
+
+
+def sub_update(sub, sets):
+    rows = bot(f"update public.buffet_subscriptions s set {sets}, updated_at = now() where s.id = {lit(sub['id'])} returning {SUB_COLS}")
+    print(sub_line(rows[0]))
+    return rows[0]
+
+
+def cmd_sub_skip(a):
+    if len(a) != 1:
+        sys.exit("uso: buffet sub skip <sub>")
+    sub = resolve_sub(a[0])
+    if sub["status"] != "active":
+        sys.exit(f"erro: {sub['name']} está {STATUS_PT[sub['status']]}")
+    sub_update(sub, f"next_due = public.buffet_sub_advance(s.next_due, s.cycle, {anchor()})")
+
+
+def cmd_sub_edit(a):
+    pos, o = opts(a, flags=("amount", "next", "card", "cycle", "remind", "name", "category", "match", "cancel-hint", "note"))
+    if len(pos) != 1 or not o:
+        sys.exit("uso: buffet sub edit <sub> [--amount v] [--next d] [--card b] [--cycle c] [--remind n] [--name X] "
+                 "[--category c] [--match t] [--cancel-hint t] [--note t]")
+    sub = resolve_sub(pos[0])
+    sets = []
+    if "amount" in o: sets.append(f"amount = {pmoney(o['amount'])}")
+    if "next" in o: sets.append(f"next_due = {lit(pdate(o['next']))}")
+    if "card" in o: sets.append(f"bank = {lit(pbank(o['card']) or None)}")
+    if "cycle" in o: sets.append(f"cycle = {lit(pcycle(o['cycle']))}")
+    if "remind" in o: sets.append(f"remind_days = {int(o['remind'])}")
+    if "name" in o: sets.append(f"name = {lit(o['name'])}")
+    if "category" in o: sets.append(f"category = {lit(pcategory(o['category']))}")
+    for k, col in (("match", "match"), ("cancel-hint", "cancel_hint"), ("note", "note")):
+        if k in o: sets.append(f"{col} = {lit(o[k] or None)}")
+    sub_update(sub, ", ".join(sets))
+
+
+def cmd_sub_status(verb):
+    def cmd(a):
+        pos, o = opts(a, flags=("date",))
+        if len(pos) != 1:
+            sys.exit(f"uso: buffet sub {verb} <sub>" + (" [--date d]" if verb == "cancel" else ""))
+        sub = resolve_sub(pos[0])
+        if verb == "pause":
+            sub_update(sub, "status = 'paused'")
+        elif verb == "resume":
+            sub_update(sub, "status = 'active', canceled_on = null, next_due = public.buffet_sub_roll(s.next_due, s.cycle, "
+                            f"{anchor()}, {lit(today().isoformat())}::date)")
+        else:
+            sub_update(sub, f"status = 'canceled', canceled_on = {lit(pdate(o.get('date')))}")
+            if sub.get("cancel_hint"):
+                print(f"como cancelar no serviço: {sub['cancel_hint']}")
+    return cmd
+
+
+def cmd_sub_due(a):
+    _, o = opts(a, flags=("days",))
+    days = int(o.get("days", 7))
+    rows = subs_with_last("s.status = 'active'")
+    lines = []
+    for r in rows:
+        n, v, card = days_to(r["next_due"]), brl(float(r["amount"])), r.get("bank") or "sem cartão"
+        short = r["id"][:8]
+        if n < -3:
+            lines.append(f"NÃO APARECEU · {r['name']} era {dm(r['next_due'])} ({v}, {card}). Cancelou ou ainda não lançou? "
+                         f"→ buffet sub charge {short} --date d | buffet sub skip {short} | buffet sub cancel {short}")
+        elif n < 0:
+            lines.append(f"VENCEU · {r['name']} {dm(r['next_due'])} ({v}, {card}), sem cobrança lançada ainda")
+        elif n <= days or (r["cycle"] == "yearly" and n <= 10):
+            when = "hoje" if n == 0 else "amanhã" if n == 1 else f"em {n} dias"
+            tag = "RENOVA" if r["cycle"] == "yearly" else "COBRA"
+            lines.append(f"{tag} {when} · {r['name']} {dm(r['next_due'])}, {v}" + (f" no {r['bank']}" if r.get("bank") else "")
+                         + (" (lembrar)" if n <= int(r["remind_days"]) else ""))
+        if r.get("last_amount") is not None and abs(float(r["last_amount"]) - float(r["amount"])) >= 0.005:
+            lines.append(f"PREÇO MUDOU · {r['name']} veio {brl(float(r['last_amount']))} em {dm(r['last_date'])} (era {v}) "
+                         f"→ buffet sub edit {short} --amount " + f"{float(r['last_amount']):.2f}".replace(".", ","))
+    print("\n".join(lines) if lines else f"(nada nos próximos {days} dias)")
+    if rows:
+        m = sum(per_month(r) for r in rows)
+        print(f"\n{len(rows)} assinatura(s) ativa(s) · {brl(m)}/mês estimado")
+
+
+SUB_COMMANDS = {"add": cmd_sub_add, "list": cmd_sub_list, "charge": cmd_sub_charge, "link": cmd_sub_link,
+                "unlink": cmd_sub_unlink, "skip": cmd_sub_skip, "edit": cmd_sub_edit, "pause": cmd_sub_status("pause"),
+                "resume": cmd_sub_status("resume"), "cancel": cmd_sub_status("cancel"), "due": cmd_sub_due}
+
+
+def cmd_sub(a):
+    if not a or a[0] not in SUB_COMMANDS:
+        sys.exit("uso: buffet sub add|list|charge|link|unlink|skip|edit|pause|resume|cancel|due … (buffet help)")
+    SUB_COMMANDS[a[0]](a[1:])
+
 
 COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-jsonl": cmd_import_jsonl,
-            "pay-bill": cmd_pay_bill, "del-bill": cmd_del_bill}
+            "pay-bill": cmd_pay_bill, "del-bill": cmd_del_bill, "sub": cmd_sub}
 
 
 def main(a):
@@ -311,5 +659,12 @@ def main(a):
         sys.exit(2)
 
 
+def entry(a):
+    try:
+        main(a)
+    except SqlError as e:
+        sys.exit(str(e))
+
+
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    entry(sys.argv[1:])

@@ -3,23 +3,25 @@ import { money } from '../lib/format'
 import { ChevronLeft, ChevronRight, Eye, EyeOff, Moon, Sun } from 'lucide-react'
 import { useTheme } from '../lib/theme'
 import {
-  UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shirt, Shapes, X, type LucideIcon,
+  UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shirt, ShoppingCart, HeartHandshake, Dumbbell, Shapes, X, type LucideIcon,
 } from 'lucide-react'
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
   Alimentação: UtensilsCrossed, Transporte: Bus, Moradia: House, Saúde: HeartPulse,
   Lazer: Ticket, Assinaturas: Repeat, Educação: GraduationCap, Vestimenta: Shirt,
+  Mercado: ShoppingCart, Doação: HeartHandshake, Fitness: Dumbbell,
 }
 
 /**
  * Data hues, chart marks only (legend dots, share bars) — never text, never icons. Fixed per category so a
- * filter never repaints survivors. Six dark-surface steps validated as a set (adjacent CVD ΔE ≥ 8.4 on
- * #151a21); status green/red stay out so "over" and "on pace" keep their meaning. Others fold to neutral.
+ * filter never repaints survivors. One set for both themes: every hue clears 3:1 on #151a21 and on #fff.
+ * Validated as a set of 11: CIEDE2000 ≥ 14 in normal vision, ≥ 7.2 under protan/deutan simulation, ≥ 10 tritan,
+ * and ≥ 10 from the status hues (accent/negative/warning) and the neutral of Outros. Icons still carry identity.
  */
 const CAT_COLORS: Record<string, string> = {
-  Alimentação: '#3987e5', Transporte: '#d95926', Moradia: '#199e70',
-  Saúde: '#c98500', Lazer: '#d55181', Assinaturas: '#9085e9',
-  Vestimenta: '#5aa8a0', // distinto do neutro de Outros (#5b6675)
+  Alimentação: '#2097ed', Transporte: '#a87848', Moradia: '#1b9b70', Saúde: '#98982c',
+  Lazer: '#e363ae', Assinaturas: '#6e57e1', Educação: '#3b7689', Vestimenta: '#9848a8',
+  Mercado: '#558217', Doação: '#c31078', Fitness: '#756432',
 }
 export const NEUTRAL_MARK = '#5b6675'
 export const catColor = (category: string) => CAT_COLORS[category] ?? NEUTRAL_MARK

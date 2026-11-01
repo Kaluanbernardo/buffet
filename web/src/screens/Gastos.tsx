@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeftRight, MoreHorizontal, Plus, Repeat, Search, Trash2, X } from 'lucide-react'
+import { ArrowLeftRight, CalendarDays, MoreHorizontal, Plus, Repeat, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { CardPayment, Transaction } from '../data/types'
 import { categoryShare, isPosted, monthDays, monthSummary, posted, weekDays } from '../data/derive'
@@ -12,8 +12,12 @@ import { useActions } from '../components/Actions'
 /** Day totals in the strip: "86", "1,2 mil" — the R$ is implied. */
 const num = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 })
 
-type View = 'dia' | 'semana' | 'mes'
-const VIEWS: { key: View; label: string }[] = [{ key: 'dia', label: 'Dia' }, { key: 'semana', label: 'Semana' }, { key: 'mes', label: 'Mês' }]
+type View = 'dia' | 'semana' | 'mes' | 'tudo'
+const VIEWS: { key: View; label: string }[] = [{ key: 'dia', label: 'Dia' }, { key: 'semana', label: 'Semana' }, { key: 'mes', label: 'Mês' }, { key: 'tudo', label: 'Tudo' }]
+type Mode = 'lista' | 'cal'
+const MODES: { key: Mode; label: string }[] = [{ key: 'lista', label: 'Lista' }, { key: 'cal', label: 'Calendário' }]
+/** "Tudo" renders this many months at a time; scrolling to the end loads the next batch. */
+const MONTH_BATCH = 3
 
 const norm = (v: string) => v.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
 
@@ -25,8 +29,14 @@ export default function Gastos() {
   const [params, setParams] = useSearchParams()
   const cat = params.get('cat')
   const setCat = (c: string | null) => setParams((p) => { if (c) p.set('cat', c); else p.delete('cat'); return p }, { replace: true })
-  const view: View = (['dia', 'semana', 'mes'] as const).find((v) => v === params.get('v')) ?? 'mes'
-  const setView = (v: View) => setParams((p) => { p.set('v', v); return p }, { replace: true })
+  const listView: View = (['dia', 'semana', 'mes', 'tudo'] as const).find((v) => v === params.get('v')) ?? 'mes'
+  const setView = (v: View) => setParams((p) => { p.set('v', v); p.delete('m'); return p }, { replace: true })
+  const mode: Mode = params.get('m') === 'cal' ? 'cal' : 'lista'
+  const setMode = (m: Mode) => setParams((p) => { if (m === 'cal') p.set('m', 'cal'); else p.delete('m'); return p }, { replace: true })
+  // The calendar is a month of days: underneath it behaves as "Dia" (the list shows the tapped day).
+  const view: View = mode === 'cal' ? 'dia' : listView
+  const [picker, setPicker] = useState(false)
+  const [months, setMonths] = useState(MONTH_BATCH)
   const [mk, setMk] = useState(current)
   const t = today()
   const [day, setDay] = useState(t)
@@ -42,7 +52,7 @@ export default function Gastos() {
   const inMonth = done.filter((x) => monthKey(x.date) === mk)
   const wkEnd = addDays(wk, 6)
   const inWeek = done.filter((x) => x.date >= wk && x.date <= wkEnd)
-  const scope = view === 'semana' ? inWeek : inMonth
+  const scope = view === 'semana' ? inWeek : view === 'tudo' ? done : inMonth
   const usedCats = [...new Set(scope.map((x) => x.category))].sort((a, b) => data.config.categories.indexOf(a) - data.config.categories.indexOf(b))
   if (cat && !usedCats.includes(cat)) usedCats.push(cat)
   const needle = norm(q.trim())
@@ -53,21 +63,32 @@ export default function Gastos() {
   const scheduled = view === 'mes' ? data.transactions.filter((x) => !isPosted(x, t) && monthKey(x.date) === mk && matches(x)).sort((a, b) => a.date.localeCompare(b.date)) : []
   const filtered = Boolean(cat || needle)
   // Card bill payments sit in the timeline, muted and outside every total (they aren't spending). No category → hidden under a chip.
-  const inPeriod = (x: { date: string }) => (view === 'dia' ? x.date === day : view === 'semana' ? x.date >= wk && x.date <= wkEnd : monthKey(x.date) === mk)
+  const inPeriod = (x: { date: string }) => (view === 'tudo' ? true : view === 'dia' ? x.date === day : view === 'semana' ? x.date >= wk && x.date <= wkEnd : monthKey(x.date) === mk)
   const bills = cat ? [] : data.cardPayments.filter((b) => inPeriod(b) && (!needle || norm(`fatura ${b.card_bank} ${b.note ?? ''}`).includes(needle)))
 
   const firstWeek = weekStart(`${first}-01`)
-  const pickMonth = (n: number) => {
-    const next = shiftMonth(mk, n)
+  const pickMonth = (n: number) => goMonth(shiftMonth(mk, n))
+  const goMonth = (next: string) => {
     setMk(next)
     setDay(next === current ? t : `${next}-${String(new Date(Number(next.slice(0, 4)), Number(next.slice(5)), 0).getDate()).padStart(2, '0')}`)
   }
-  const periodName = view === 'dia' ? dayLabel(day).toLowerCase() : view === 'semana' ? (wk === weekStart(t) ? 'nesta semana' : `na semana ${weekRange(wk)}`) : monthName(mk).toLowerCase()
+  const periodName = view === 'tudo' ? 'no histórico' : view === 'dia' ? dayLabel(day).toLowerCase() : view === 'semana' ? (wk === weekStart(t) ? 'nesta semana' : `na semana ${weekRange(wk)}`) : monthName(mk).toLowerCase()
 
   type Row = { tx: Transaction } | { bill: CardPayment }
   const days = new Map<string, Row[]>()
   const rows: [string, Row][] = [...list.map((tx) => [tx.date, { tx }] as [string, Row]), ...bills.map((bill) => [bill.date, { bill }] as [string, Row])]
   for (const [date, r] of rows.sort((a, b) => b[0].localeCompare(a[0]))) days.set(date, [...(days.get(date) ?? []), r])
+  // "Tudo": the newest `months` months with rows, a month heading above each; the rest loads on scroll.
+  const dayMonths = [...new Set([...days.keys()].map(monthKey))]
+  const visibleDays = view === 'tudo' ? [...days].filter(([date]) => dayMonths.indexOf(monthKey(date)) < months) : [...days]
+  const monthTotal = (m: string) => list.reduce((s, x) => s + (monthKey(x.date) === m ? x.amount : 0), 0)
+  const more = view === 'tudo' && dayMonths.length > months
+  const monthLabel = (
+    <button type="button" onClick={() => setPicker(true)} aria-haspopup="dialog" aria-label={`${monthName(mk)} — escolher mês ou ano`}
+      className="inline-flex h-10 items-center gap-1.5 rounded-full px-3 transition-colors hover:bg-raised">
+      <CalendarDays size={16} aria-hidden className="text-faint" />{monthName(mk)}
+    </button>
+  )
 
   const unlink = (t: Transaction) => {
     const set = (sid?: string) => update((d) => ({ ...d, transactions: d.transactions.map((x) => (x.id === t.id ? { ...x, subscription_id: sid } : x)) }))
@@ -88,13 +109,14 @@ export default function Gastos() {
       />
 
       <Columns template="lg:grid-cols-[minmax(0,25rem)_minmax(0,1fr)]" main={<>
-      <Segmented value={view} options={VIEWS} onChange={setView} label="Agrupar gastos por" />
+      <Segmented value={mode} options={MODES} onChange={setMode} label="Ver gastos como" />
+      {mode === 'lista' && <div className="mt-2"><Segmented value={listView} options={VIEWS} onChange={setView} label="Agrupar gastos por" /></div>}
       <div className="mt-3">
-        {view === 'semana' ? (
+        {view === 'tudo' ? null : view === 'semana' ? (
           <PeriodSwitcher unit="Semana" label={wk === weekStart(t) ? 'Esta semana' : wk === addDays(weekStart(t), -7) ? 'Semana passada' : weekRange(wk)}
             prevDisabled={wk <= firstWeek} nextDisabled={wk >= weekStart(t)} onPrev={() => setWk(addDays(wk, -7))} onNext={() => setWk(addDays(wk, 7))} />
         ) : (
-          <PeriodSwitcher label={monthName(mk)} prevDisabled={mk <= first} nextDisabled={mk >= current} onPrev={() => pickMonth(-1)} onNext={() => pickMonth(1)} />
+          <PeriodSwitcher label={monthLabel} prevDisabled={mk <= first} nextDisabled={mk >= current} onPrev={() => pickMonth(-1)} onNext={() => pickMonth(1)} />
         )}
       </div>
 
@@ -122,7 +144,9 @@ export default function Gastos() {
         </div>
       )}
 
-      {view === 'dia' && <DayStrip key={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
+      {mode === 'cal' && <MonthCalendar key={mk} mk={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
+      {view === 'tudo' && <HistoryPanel tx={shown} first={first} onPick={(m) => { goMonth(m); setView('mes') }} />}
+      {mode === 'lista' && view === 'dia' && <DayStrip key={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
       {view === 'semana' && <WeekPanel key={wk} start={wk} tx={done.filter(matches)} />}
       {view === 'mes' && <MonthPanel key={mk} mk={mk} tx={shown} onPick={(c) => setCat(c === cat ? null : c)} />}
       </>} side={<>
@@ -139,10 +163,16 @@ export default function Gastos() {
         )
       ) : (
         <div className="space-y-6">
-          {[...days].map(([date, items]) => (
+          {visibleDays.map(([date, items], i) => (
             <section key={date}>
+              {view === 'tudo' && (i === 0 || monthKey(visibleDays[i - 1][0]) !== monthKey(date)) && (
+                <div className={`mb-3 flex items-baseline justify-between border-b border-line px-1 pb-2 ${i === 0 ? '' : 'pt-2'}`}>
+                  <h2 className="text-[17px] font-bold tracking-[-0.01em]">{monthName(monthKey(date))}</h2>
+                  <span className="money text-sm font-semibold text-muted">{money(monthTotal(monthKey(date)))}</span>
+                </div>
+              )}
               <div className="mb-2 flex items-baseline justify-between px-1 text-[13px]">
-                <h2 className="font-bold text-muted first-letter:uppercase">{dayLabel(date)}</h2>
+                <h3 className="font-bold text-muted first-letter:uppercase">{dayLabel(date)}</h3>
                 {items.some((r) => 'tx' in r) && <span className="money text-faint">{money(items.reduce((s, r) => s + ('tx' in r ? r.tx.amount : 0), 0))}</span>}
               </div>
               <ul className="card divide-y divide-rule">
@@ -170,6 +200,7 @@ export default function Gastos() {
               </ul>
             </section>
           ))}
+          {more && <LoadMore onMore={() => setMonths((n) => n + MONTH_BATCH)} />}
           {scheduled.length > 0 && (
             <section aria-labelledby="scheduled-h">
               <div className="mb-2 flex items-baseline justify-between px-1 text-[13px]">
@@ -193,6 +224,12 @@ export default function Gastos() {
         </div>
       )}
       </>} />
+
+      <Sheet open={picker} onClose={() => setPicker(false)} title="Escolher mês">
+        {picker && <MonthPicker value={mk} first={first} last={current} tx={done}
+          onPick={(m) => { goMonth(m); if (mode === 'lista' && listView !== 'mes' && listView !== 'dia') setView('mes'); setPicker(false) }}
+          onAll={mode === 'lista' ? () => { setView('tudo'); setPicker(false) } : undefined} />}
+      </Sheet>
 
       <Sheet open={menu !== null} onClose={() => setMenu(null)} title={menu?.merchant ?? ''}>
         {menu && (
@@ -310,4 +347,135 @@ function MonthPanel({ mk, tx, onPick }: { mk: string; tx: Transaction[]; onPick:
       </div>
     </section>
   )
+}
+
+const WEEKDAYS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom']
+
+/**
+ * Calendário: the month as a seg → dom grid. Each day shows its total; the tint deepens with the spend
+ * (relative to the month's biggest day), so heavy days read at a glance. Tap a day → its list.
+ */
+function MonthCalendar({ mk, days, value, onChange }: { mk: string; days: { date: string; day: number; total: number }[]; value: string; onChange: (d: string) => void }) {
+  const t = today()
+  const lead = (parseISO(`${mk}-01`).getDay() + 6) % 7
+  const max = Math.max(0, ...days.map((d) => d.total))
+  const total = days.reduce((s, d) => s + d.total, 0)
+  return (
+    <section className="card mb-5 p-3 sm:p-4" aria-label={`Calendário de ${monthName(mk).toLowerCase()}`}>
+      <div className="mb-3 flex items-baseline justify-between px-1">
+        <p className="text-sm font-semibold text-muted">{plural(days.filter((d) => d.total > 0).length, 'dia com gasto', 'dias com gasto')}</p>
+        <p className="money text-[15px] font-bold">{money(total)}</p>
+      </div>
+      <div aria-hidden className="mb-1 grid grid-cols-7 gap-1 text-center text-[11px] font-semibold text-faint uppercase">
+        {WEEKDAYS.map((w) => <span key={w}>{w}</span>)}
+      </div>
+      <div role="radiogroup" aria-label="Escolher dia" className="grid grid-cols-7 gap-1">
+        {Array.from({ length: lead }, (_, i) => <span key={`pad-${i}`} aria-hidden />)}
+        {days.map((d) => {
+          const on = d.date === value
+          const future = d.date > t
+          const heat = !on && d.total > 0 && max > 0 ? Math.round(6 + (d.total / max) * 22) : 0
+          return (
+            <button key={d.date} type="button" role="radio" aria-checked={on} disabled={future} onClick={() => onChange(d.date)}
+              aria-label={`${dayLabel(d.date)}: ${d.total > 0 ? money(d.total) : 'sem gastos'}`}
+              style={heat ? { background: `color-mix(in srgb, var(--color-ink) ${heat}%, var(--color-surface))` } : undefined}
+              className={`flex aspect-square min-h-11 flex-col items-center justify-center gap-0.5 rounded-xl border transition-colors disabled:opacity-35 sm:aspect-[5/4] ${on ? 'border-ink bg-ink text-ground' : d.date === t ? 'border-accent' : 'border-transparent hover:border-control'}`}>
+              <span className={`text-[15px] leading-none font-bold ${d.date === t && !on ? 'text-accent' : ''}`}>{d.day}</span>
+              <span aria-hidden className={`money h-3 text-[10px] leading-none font-semibold ${on ? '' : d.total > 0 ? 'text-ink' : 'text-faint'}`}>
+                {future || d.total === 0 ? '' : valuesHidden() ? '••' : num.format(d.total < 1000 ? Math.round(d.total) : d.total)}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+/** Tudo: one row per month (newest first) with its total against the biggest month; tap jumps to that month. */
+function HistoryPanel({ tx, first, onPick }: { tx: Transaction[]; first: string; onPick: (mk: string) => void }) {
+  const by = new Map<string, number>()
+  for (const x of tx) by.set(monthKey(x.date), (by.get(monthKey(x.date)) ?? 0) + x.amount)
+  const rows = [...by].sort((a, b) => b[0].localeCompare(a[0]))
+  if (rows.length === 0) return null
+  const max = Math.max(...rows.map(([, v]) => v))
+  const total = rows.reduce((s, [, v]) => s + v, 0)
+  return (
+    <section className="card mb-5 p-4" aria-label="Gastos por mês">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-muted">Desde {monthName(first).toLowerCase()}</p>
+          <p className="money text-[22px] leading-tight font-extrabold tracking-[-0.03em]">{money(total)}</p>
+        </div>
+        <p className="money text-right text-[13px] text-muted">média por mês<br /><span className="font-semibold text-ink">{money(total / rows.length)}</span></p>
+      </div>
+      <ul className="-mx-2 max-h-[22rem] overflow-y-auto">
+        {rows.map(([m, v]) => (
+          <li key={m}>
+            <button type="button" onClick={() => onPick(m)} className="grid w-full grid-cols-[6.5rem_1fr_auto] items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-raised">
+              <span className="truncate text-sm font-semibold">{monthName(m)}</span>
+              <span aria-hidden className="h-2 overflow-hidden rounded-full bg-raised">
+                <span className="block h-full rounded-full bg-muted" style={{ width: `${Math.max(2, (v / max) * 100)}%` }} />
+              </span>
+              <span className="money text-sm text-muted">{money(v)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+/** Month/year jump: years newest first, a 4×3 grid of months each; months outside the history are disabled. */
+function MonthPicker({ value, first, last, tx, onPick, onAll }: {
+  value: string; first: string; last: string; tx: Transaction[]; onPick: (mk: string) => void; onAll?: () => void
+}) {
+  const [y0, y1] = [Number(first.slice(0, 4)), Number(last.slice(0, 4))]
+  const [year, setYear] = useState(Number(value.slice(0, 4)))
+  const totals = new Map<string, number>()
+  for (const x of tx) totals.set(monthKey(x.date), (totals.get(monthKey(x.date)) ?? 0) + x.amount)
+  const years = Array.from({ length: y1 - y0 + 1 }, (_, i) => y1 - i)
+  return (
+    <div className="grid gap-4">
+      {years.length > 1 && (
+        <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1" role="radiogroup" aria-label="Ano">
+          {years.map((y) => (
+            <button key={y} type="button" role="radio" aria-checked={y === year} onClick={() => setYear(y)}
+              className={`h-9 flex-none rounded-full border px-4 text-sm font-semibold transition-colors ${y === year ? 'border-ink bg-ink text-ground' : 'border-control text-muted hover:text-ink'}`}>
+              {y}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+        {Array.from({ length: 12 }, (_, i) => {
+          const m = `${year}-${String(i + 1).padStart(2, '0')}`
+          const off = m < first || m > last
+          const on = m === value
+          const v = totals.get(m) ?? 0
+          return (
+            <button key={m} type="button" disabled={off} onClick={() => onPick(m)} aria-current={on ? 'date' : undefined} {...(on ? { 'data-autofocus': true } : {})}
+              className={`flex h-16 flex-col items-center justify-center gap-0.5 rounded-2xl border transition-colors disabled:opacity-30 ${on ? 'border-ink bg-ink text-ground' : 'border-line bg-surface hover:border-control'}`}>
+              <span className="text-sm font-bold capitalize">{new Date(year, i, 1).toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '')}</span>
+              <span className={`money text-[11px] ${on ? '' : 'text-faint'}`}>{off ? '' : v > 0 ? (valuesHidden() ? '••' : num.format(Math.round(v))) : '–'}</span>
+            </button>
+          )
+        })}
+      </div>
+      {onAll && <button type="button" className="btn-ghost h-11 px-4" onClick={onAll}>Ver todo o histórico</button>}
+    </div>
+  )
+}
+
+/** Infinite scroll for "Tudo": loads the next months when this reaches the viewport; the button is the fallback. */
+function LoadMore({ onMore }: { onMore: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) onMore() }, { rootMargin: '400px 0px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [onMore])
+  return <button ref={ref} type="button" className="btn-ghost h-11 w-full px-4" onClick={onMore}>Carregar meses anteriores</button>
 }

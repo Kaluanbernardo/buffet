@@ -45,7 +45,7 @@ export const GROUPS: { key: BudgetGroup; label: string; hint: string }[] = [
 ]
 const DEFAULT_GROUP: Record<string, BudgetGroup> = {
   Moradia: 'essenciais', Alimentação: 'essenciais', Transporte: 'essenciais', Saúde: 'essenciais',
-  Lazer: 'lifestyle', Assinaturas: 'lifestyle', Vestimenta: 'lifestyle', Outros: 'lifestyle', Educação: 'metas',
+  Lazer: 'lifestyle', Assinaturas: 'lifestyle', Vestimenta: 'lifestyle', Mercado: 'essenciais', Doação: 'metas', Fitness: 'essenciais', Outros: 'lifestyle', Educação: 'metas',
 }
 export const groupOf = (b: Budget): BudgetGroup => b.group ?? DEFAULT_GROUP[b.category] ?? 'lifestyle'
 

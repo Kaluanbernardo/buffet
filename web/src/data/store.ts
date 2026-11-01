@@ -5,7 +5,7 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { BudgetGroup, BuffetData, Subscription, Transaction } from './types'
-import { seed } from './seed'
+import { DEFAULT_CATEGORIES, seed } from './seed'
 import { setValuesHidden, valuesHidden } from '../lib/format'
 import { supabase } from '../lib/supabase'
 
@@ -25,9 +25,18 @@ const GROUPS: BudgetGroup[] = ['essenciais', 'lifestyle', 'metas']
  * `incomes` (added with the YNAB-style budget) starts empty and drops non-numeric entries, every configured
  * category gets a budget row, and an unknown `group` falls back to the default for that category.
  */
+/** Saved list plus any default category it predates (e.g. Mercado, Doação, Fitness), kept before Outros. */
+export const withDefaults = (cats: string[] = []) => {
+  const missing = DEFAULT_CATEGORIES.filter((c) => !cats.includes(c))
+  if (missing.length === 0) return cats
+  const at = cats.indexOf('Outros')
+  return at < 0 ? [...cats, ...missing.filter((c) => c !== 'Outros'), ...(missing.includes('Outros') ? ['Outros'] : [])] : [...cats.slice(0, at), ...missing, ...cats.slice(at)]
+}
+
 export function migrate(raw: Partial<BuffetData>): BuffetData {
   const base = seed()
   const d = { ...base, ...raw, config: { ...base.config, ...raw.config } } as BuffetData
+  d.config.categories = withDefaults(d.config.categories)
   const incomes: Record<string, number> = {}
   for (const [k, v] of Object.entries(raw.incomes ?? {})) if (/^\d{4}-\d{2}$/.test(k) && Number.isFinite(v) && v >= 0) incomes[k] = v
   const budgets = (Array.isArray(d.budgets) ? d.budgets : []).map((b) =>
@@ -140,7 +149,7 @@ export function supabaseStore(sb: SupabaseClient): DataStore {
         reserves: reserves.map((r) => ({ id: str(r.id), name: str(r.name), target: num(r.target), current: num(r.current) })),
         investments: investments.map((r) => ({ id: str(r.id), name: str(r.name), kind: str(r.kind), institution: str(r.institution), amount: num(r.amount) })),
         incomes: Object.fromEntries(incomes.map((r) => [str(r.month), num(r.amount)])),
-        ...(cfg ? { config: { categories: cfg.categories as string[], banks: cfg.banks as BuffetData['config']['banks'],
+        ...(cfg ? { config: { categories: withDefaults(cfg.categories as string[]), banks: cfg.banks as BuffetData['config']['banks'],
           cash_balance: cfg.cash_balance == null || !Number.isFinite(Number(cfg.cash_balance)) ? null : Number(cfg.cash_balance) } } : {}),
       })
       if (cfg) { last = data; return data }

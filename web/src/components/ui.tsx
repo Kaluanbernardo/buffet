@@ -3,13 +3,13 @@ import { money } from '../lib/format'
 import { ChevronLeft, ChevronRight, Eye, EyeOff, Moon, Sun } from 'lucide-react'
 import { useTheme } from '../lib/theme'
 import {
-  UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shirt, ShoppingCart, HeartHandshake, Dumbbell, Shapes, X, type LucideIcon,
+  UtensilsCrossed, Bus, House, HeartPulse, Ticket, Repeat, GraduationCap, Shirt, ShoppingCart, HeartHandshake, Dumbbell, Gamepad2, Shapes, X, type LucideIcon,
 } from 'lucide-react'
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
   Alimentação: UtensilsCrossed, Transporte: Bus, Moradia: House, Saúde: HeartPulse,
   Lazer: Ticket, Assinaturas: Repeat, Educação: GraduationCap, Vestimenta: Shirt,
-  Mercado: ShoppingCart, Doação: HeartHandshake, Fitness: Dumbbell,
+  Mercado: ShoppingCart, Doação: HeartHandshake, Fitness: Dumbbell, Jogos: Gamepad2,
 }
 
 /**
@@ -21,7 +21,7 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
 const CAT_COLORS: Record<string, string> = {
   Alimentação: '#2097ed', Transporte: '#a87848', Moradia: '#1b9b70', Saúde: '#98982c',
   Lazer: '#e363ae', Assinaturas: '#6e57e1', Educação: '#3b7689', Vestimenta: '#9848a8',
-  Mercado: '#558217', Doação: '#c31078', Fitness: '#756432',
+  Mercado: '#558217', Doação: '#c31078', Fitness: '#756432', Jogos: '#d8572a',
 }
 export const NEUTRAL_MARK = '#5b6675'
 export const catColor = (category: string) => CAT_COLORS[category] ?? NEUTRAL_MARK

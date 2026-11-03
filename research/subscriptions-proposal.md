@@ -5,7 +5,7 @@
 
 ## 0. Resumo (para decidir rápido)
 
-- **A cobrança no cartão continua sendo gasto.** Diferente da fatura (que é só dinheiro mudando de lugar e por isso saiu de `buffet_transactions`), os R$ 74,90 do Meli+ são consumo de verdade. Eles entram no total do mês **uma vez**, como hoje, na categoria Assinaturas.
+- **A cobrança no cartão continua sendo gasto.** Diferente da fatura (que é só dinheiro mudando de lugar e por isso saiu de `buffet_transactions`), os R$ 49,77 do Streaming X são consumo de verdade. Eles entram no total do mês **uma vez**, como hoje, na categoria Assinaturas.
 - **A assinatura é um compromisso, não um lançamento.** Ela mora numa tabela nova, `buffet_subscriptions`, e diz o que se espera: nome, valor, ciclo, próxima cobrança, cartão e status. Ela **nunca soma** em gasto.
 - **A ligação é uma coluna nova em `buffet_transactions`:** `subscription_id`. Um gasto ligado a uma assinatura é "a cobrança deste ciclo". Com isso, "já cobrou este mês?", histórico, preço que subiu e "não apareceu" são todos derivados, sem duplicar nada.
 - **No app:** uma tela Assinaturas que se abre a partir de **Dívidas** (que vira "Compromissos: Parcelas | Assinaturas"). Ela também aparece em **Próximos vencimentos** no Hoje e como selo ↻ nos gastos ligados.
@@ -20,7 +20,7 @@ Lido em PRODUCT.md, DESIGN.md, `supabase/migrations/*`, `scripts/buffet`, `web/s
 
 | Peça | Estado | Relevância |
 |---|---|---|
-| `buffet_transactions` | gasto avulso: `date, amount, merchant, category, bank, note, source` | Meli+ já está aqui |
+| `buffet_transactions` | gasto avulso: `date, amount, merchant, category, bank, note, source` | Streaming X já está aqui |
 | `buffet_app_config.categories` | inclui **Assinaturas** (grupo *lifestyle* em `derive.ts`) | categoria já existe, tem orçamento próprio |
 | `buffet_debts` | parcelas (`installments_paid/total`, `due_day`); hoje guarda até a "Fatura Nubank (vence 11, pagar 15)" como 1/1 | modelo de "vence dia X" que já tem UI (Dívidas, Próximos vencimentos) |
 | `buffet_card_payments` | fatura ≠ gasto (opção B do `bill-payment-design.md`) | precedente: tabela própria e só leitura no app |
@@ -28,16 +28,16 @@ Lido em PRODUCT.md, DESIGN.md, `supabase/migrations/*`, `scripts/buffet`, `web/s
 | Gastos | lista com busca, chips de categoria e **só a ação Excluir** por linha (não há detalhe nem edição) | "Transformar em assinatura" precisa de uma ação nova na linha |
 | CLI | `expense`, `del`, `list`, `pay-bill`, `del-bill`. Um comando SQL por chamada, como role `bot` | os novos comandos seguem o mesmo molde (CTE atômica) |
 
-**O lançamento real do Meli+** (consulta só de leitura, 30/10):
+**O lançamento real do Streaming X** (consulta só de leitura, 30/10):
 
 ```
-id 5a5c6066-2e07-4a67-97f5-4a37e783cff1 · 2026-10-30 · R$ 74,90 · merchant "Meli+"
+id <id> · 2026-10-30 · R$ 49,77 · merchant "Streaming X"
 category Assinaturas · bank "Cartão" · note "crédito (via Arnold)"
 ```
 
 Dois detalhes que a proposta precisa resolver:
 1. `bank = "Cartão"` **não diz qual cartão** (Nubank? Inter?). Para a assinatura isso importa, porque é o que liga a cobrança à fatura certa. → **pergunta para o Kaluan (§7).**
-2. R$ 74,90 é mensal ou anual? O Meli+ tem planos de preços diferentes. → **pergunta (§7).** O exemplo abaixo assume **mensal**.
+2. R$ 49,77 é mensal ou anual? O Streaming X tem planos de preços diferentes. → **pergunta (§7).** O exemplo abaixo assume **mensal**.
 
 ---
 
@@ -63,7 +63,7 @@ Padrão que se repete: **(1)** a compra continua no extrato, **(2)** a assinatur
 
 | Coisa | O que é | Soma em gasto? |
 |---|---|---|
-| **Assinatura** (`buffet_subscriptions`) | contrato: "Meli+, R$ 74,90/mês no Nubank, próxima em 30/11" | **não**, nunca |
+| **Assinatura** (`buffet_subscriptions`) | contrato: "Streaming X, R$ 49,77/mês no Nubank, próxima em 30/11" | **não**, nunca |
 | **Cobrança** (`buffet_transactions` com `subscription_id`) | o gasto real daquele ciclo, com valor e data reais | **sim**, uma vez, como qualquer gasto |
 | **Pagamento de fatura** (`buffet_card_payments`) | o dinheiro saindo da conta para o cartão | não (já resolvido) |
 
@@ -79,7 +79,7 @@ O "custo mensal de assinaturas" mostrado na tela é uma **projeção** (anual ÷
 create table public.buffet_subscriptions (
   id text primary key default gen_random_uuid()::text,
   user_id uuid not null default public.buffet_owner(),
-  name text not null,                                   -- "Meli+"
+  name text not null,                                   -- "Streaming X"
   amount numeric(12,2) not null check (amount > 0),     -- valor esperado por ciclo
   cycle text not null default 'monthly' check (cycle in ('monthly', 'yearly')),
   next_due date not null,                               -- próxima cobrança esperada
@@ -87,8 +87,8 @@ create table public.buffet_subscriptions (
   category text not null default 'Assinaturas',         -- categoria do gasto gerado
   status text not null default 'active' check (status in ('active', 'paused', 'canceled')),
   remind_days int not null default 2 check (remind_days between 0 and 30),
-  match text,                                           -- trecho do merchant p/ sugerir vínculo ("meli")
-  cancel_hint text,                                     -- "app ML › Meli+ › Cancelar" ou URL
+  match text,                                           -- trecho do merchant p/ sugerir vínculo ("streaming")
+  cancel_hint text,                                     -- "app ML › Streaming X › Cancelar" ou URL
   note text,
   started_on date, canceled_on date,
   source text not null default 'bot' check (source in ('app', 'bot')),
@@ -115,7 +115,7 @@ create index on public.buffet_transactions (subscription_id) where subscription_
 - **Zero risco de contagem dupla**: assinatura não é linha de dinheiro, e o gasto continua onde já está. `monthSummary`, Orçamento, gráficos e CSV não mudam.
 - Migration **aditiva**. O PWA atual ignora a coluna nova, e o `upsert` do `store.ts` não a apaga.
 - O histórico, a mudança de preço e o "não apareceu" saem do vínculo, sem tabela extra.
-- Transformar o Meli+ num gasto acompanhado é um `insert` + um `update`.
+- Transformar o Streaming X num gasto acompanhado é um `insert` + um `update`.
 
 **Contras**
 - Uma tabela nova (RLS, grants, `Spec` no `store.ts`, tipo) e uma coluna nova em `buffet_transactions` (incluir no `toRow` e no `load`).
@@ -136,7 +136,7 @@ Igual à A, mas o vínculo é uma tabela N:1 (`subscription_id, transaction_id, 
 
 ### Opção C — zero schema: reaproveitar `buffet_debts` + categoria
 
-Cadastrar o Meli+ como "dívida" com `installments_total` alto (ex.: 999) e `due_day`, e acompanhar só pela categoria Assinaturas.
+Cadastrar o Streaming X como "dívida" com `installments_total` alto (ex.: 999) e `due_day`, e acompanhar só pela categoria Assinaturas.
 
 **Prós**
 - Nenhuma migration. Aparece hoje mesmo em Dívidas e em Próximos vencimentos.
@@ -160,36 +160,36 @@ Cadastrar o Meli+ como "dívida" com `installments_total` alto (ex.: 999) e `due
 
 ---
 
-## 5. Fluxo concreto: Meli+ (opção A)
+## 5. Fluxo concreto: Streaming X (opção A)
 
-**Hoje** o Meli+ é só um gasto: `5a5c6066…`, 30/10, R$ 74,90, Assinaturas, bank "Cartão".
+**Hoje** o Streaming X é só um gasto: `<id>`, 30/10, R$ 49,77, Assinaturas, bank "Cartão".
 
-**Pelo chat** (Kaluan: "o Meli+ é assinatura mensal no Nubank"):
+**Pelo chat** (Kaluan: "o Streaming X é assinatura mensal no Nubank"):
 
 ```bash
-buffet sub add 74,90 --name "Meli+" --cycle mensal --card Nubank --match meli \
-  --from-tx 5a5c6066-2e07-4a67-97f5-4a37e783cff1
+buffet sub add 49,77 --name "Streaming X" --cycle mensal --card Nubank --match streaming \
+  --from-tx <id>
 ```
 
 Em **um comando** (CTE): cria a assinatura com `next_due = 30/10 + 1 mês = 30/11`, faz o update do gasto (`subscription_id = <nova>` e, se vier `--card`, corrige `bank = 'Nubank'`) e imprime:
 
 ```
-Meli+ · R$ 74,90/mês · Nubank · próxima 30/11 · ativa
-vinculado: 30/10 R$ 74,90 (5a5c6066…)
+Streaming X · R$ 49,77/mês · Nubank · próxima 30/11 · ativa
+vinculado: 30/10 R$ 49,77 (<id>)
 ```
 
-**Pelo app:** Gastos › linha do Meli+ › menu ⋯ › **Acompanhar como assinatura** → sheet com o formulário já preenchido (nome = merchant, valor, cartão, ciclo mensal, próxima = data + 1 ciclo) → Salvar. Toast: "Meli+ agora é assinatura · próxima em 30/11 · Desfazer".
+**Pelo app:** Gastos › linha do Streaming X › menu ⋯ › **Acompanhar como assinatura** → sheet com o formulário já preenchido (nome = merchant, valor, cartão, ciclo mensal, próxima = data + 1 ciclo) → Salvar. Toast: "Streaming X agora é assinatura · próxima em 30/11 · Desfazer".
 
-**Em 28/11** (`remind_days = 2`): o check-in do chat diz "Sábado cai o Meli+, R$ 74,90 no Nubank". No Hoje, em Próximos vencimentos: `↻ Meli+ · Nubank · Em 2 dias · R$ 74,90`.
+**Em 28/11** (`remind_days = 2`): o check-in do chat diz "Sábado cai o Streaming X, R$ 49,77 no Nubank". No Hoje, em Próximos vencimentos: `↻ Streaming X · Nubank · Em 2 dias · R$ 49,77`.
 
 **Em 30/11**, um de três caminhos:
-1. O chat lança `buffet expense 74,90 --merchant "Meli+" --category Assinaturas --bank Nubank`. O CLI vê o `match` "meli" numa assinatura ativa e **vincula sozinho**, avisando no stderr ("vinculado à assinatura Meli+; próxima 30/12"). `--no-sub` evita isso.
-2. O chat usa o atalho `buffet sub charge meli`, que lança o gasto com os dados da assinatura e avança `next_due`.
-3. No app, a linha da assinatura vencida mostra **"Cobrou?" → [Lançar R$ 74,90] [Vincular gasto…] [Não cobrou]**.
+1. O chat lança `buffet expense 49,77 --merchant "Streaming X" --category Assinaturas --bank Nubank`. O CLI vê o `match` "streaming" numa assinatura ativa e **vincula sozinho**, avisando no stderr ("vinculado à assinatura Streaming X; próxima 30/12"). `--no-sub` evita isso.
+2. O chat usa o atalho `buffet sub charge streaming`, que lança o gasto com os dados da assinatura e avança `next_due`.
+3. No app, a linha da assinatura vencida mostra **"Cobrou?" → [Lançar R$ 49,77] [Vincular gasto…] [Não cobrou]**.
 
-**Se em 03/12 nada apareceu:** estado "Não apareceu". O check-in pergunta "Meli+ não apareceu em 30/11. Cancelou ou ainda não lançou?"
+**Se em 03/12 nada apareceu:** estado "Não apareceu". O check-in pergunta "Streaming X não apareceu em 30/11. Cancelou ou ainda não lançou?"
 
-**No total de novembro:** os R$ 74,90 contam **uma vez**, como gasto em Assinaturas. A tela Assinaturas mostra "R$ 74,90/mês" como **compromisso**, não soma.
+**No total de novembro:** os R$ 49,77 contam **uma vez**, como gasto em Assinaturas. A tela Assinaturas mostra "R$ 49,77/mês" como **compromisso**, não soma.
 
 ---
 
@@ -219,17 +219,17 @@ Pontos de contato fora da tela:
 ```
 ┌───────────────────────────────────────────┐
 │ Assinaturas                         [+ Nova] │
-│ R$ 74,90/mês · 1 ativa                       │   ← anual ÷ 12, legenda "estimado"
-│ R$ 898,80 por ano                            │
+│ R$ 49,77/mês · 1 ativa                       │   ← anual ÷ 12, legenda "estimado"
+│ R$ 10,29 por ano                            │
 ├───────────────────────────────────────────┤
 │ Atenção                                      │   ← só aparece se houver
-│  ⚠ Spotify subiu: 21,90 → 23,90              │
+│  ⚠ Spotify subiu: 33,95 → 14,69              │
 │  ⚠ Netflix não apareceu (dia 12)  [Cobrou?]  │
 ├───────────────────────────────────────────┤
 │ Próximas                                     │
-│  ↻ Meli+          Nubank · mensal   R$ 74,90 │
+│  ↻ Streaming X          Nubank · mensal   R$ 49,77 │
 │                   [Em 2 dias]                │
-│  ↻ Anuidade X     Inter · anual    R$ 300,00 │
+│  ↻ Anuidade X     Inter · anual    R$ 95,05 │
 │                   [Renova 15/jan]            │
 ├───────────────────────────────────────────┤
 │ Pausadas (0) · Canceladas (0)       ▸        │   ← recolhidas
@@ -253,13 +253,13 @@ Pontos de contato fora da tela:
 - Avançado (recolhido): trecho para reconhecer no merchant, como cancelar, nota.
 
 **Cobrou? (ação na linha vencida)**
-- **Lançar R$ 74,90**: cria o gasto (`merchant = name`, `category`, `bank`, `date = next_due`, `subscription_id`) e avança `next_due`. Toast com Desfazer.
+- **Lançar R$ 49,77**: cria o gasto (`merchant = name`, `category`, `bank`, `date = next_due`, `subscription_id`) e avança `next_due`. Toast com Desfazer.
 - **Vincular gasto…**: lista gastos **sem vínculo** de ±5 dias, com valor ±15% ou merchant com o `match`. Tocar vincula e avança.
 - **Não cobrou**: avança `next_due` sem gasto (mês grátis ou pulado). Opção de pausar.
 
 ### 6.3 Como o gasto e a assinatura se ligam visualmente (sem duplicar)
 
-- O **gasto** é a única linha com dinheiro. Ele aparece em Gastos, em Hoje e no total, igual a hoje, com o selo ↻ "Meli+".
+- O **gasto** é a única linha com dinheiro. Ele aparece em Gastos, em Hoje e no total, igual a hoje, com o selo ↻ "Streaming X".
 - A **assinatura** mostra o **valor esperado** em tipografia `text-muted` e o rótulo "por mês". Quando já cobrou no ciclo, a pill vira "Cobrada 30/10" e o valor real aparece no histórico. O total da tela de Assinaturas é sempre "compromisso por mês", **nunca** "gasto".
 - Em Próximos vencimentos (Hoje), só entram assinaturas **ainda não cobradas** no ciclo, então uma cobrança feita não aparece duas vezes na mesma tela.
 
@@ -269,7 +269,7 @@ Pontos de contato fora da tela:
 
 ### 7.1 CLI `buffet sub …`
 
-Mesmo estilo do `expense`/`pay-bill`: um comando SQL por chamada (CTE quando há mais de uma escrita), `source='bot'`, datas `hoje/ontem/dd/mm`, valores `74,90`. `<sub>` aceita id ou nome/trecho (único, sem diferenciar acentos/maiúsculas).
+Mesmo estilo do `expense`/`pay-bill`: um comando SQL por chamada (CTE quando há mais de uma escrita), `source='bot'`, datas `hoje/ontem/dd/mm`, valores `49,77`. `<sub>` aceita id ou nome/trecho (único, sem diferenciar acentos/maiúsculas).
 
 ```
 ASSINATURAS (buffet_subscriptions — compromisso; o gasto real continua em buffet_transactions)
@@ -289,7 +289,7 @@ ASSINATURAS (buffet_subscriptions — compromisso; o gasto real continua em buff
 
 Mudanças no que já existe:
 - `buffet expense` ganha `--sub <sub>` e, **sem a flag**, vincula sozinho quando o merchant bate com o `match` de **uma única** assinatura ativa com `next_due` a até ±7 dias. Ele avisa no stderr e aceita `--no-sub` para não vincular. Se bater em mais de uma, só avisa e não vincula.
-- `buffet list` mostra `↻ Meli+` na coluna nota/assinatura dos gastos ligados.
+- `buffet list` mostra `↻ Streaming X` na coluna nota/assinatura dos gastos ligados.
 - O bot **não apaga** assinaturas (só cancela), igual ao princípio de grants mínimos de hoje.
 
 ### 7.2 Check-in e alertas
@@ -298,11 +298,11 @@ O que o chat deve lembrar, por prioridade:
 
 | Quando | Mensagem (exemplo) |
 |---|---|
-| `next_due − hoje = remind_days` | "Sábado cai o Meli+, R$ 74,90 no Nubank." |
-| anual, 10 dias antes | "A anuidade X renova em 15/01 (R$ 300). Ainda vale a pena?" |
-| `next_due` passou 3 dias sem vínculo | "Meli+ não apareceu em 30/11. Cancelou ou ainda não lançou?" → oferece `sub charge` ou `sub skip` |
-| cobrança vinculada com valor ≠ `amount` | "Meli+ veio R$ 79,90 (era R$ 74,90). Atualizo o valor?" → `sub edit --amount` |
-| alerta de fatura (já existe para a Fatura Nubank, vence 11) | "Na fatura do Nubank, R$ X são assinaturas (Meli+, …)." Soma dos gastos ligados com `bank = Nubank` no período da fatura. |
+| `next_due − hoje = remind_days` | "Sábado cai o Streaming X, R$ 49,77 no Nubank." |
+| anual, 10 dias antes | "A anuidade X renova em 15/01 (R$ 16,04). Ainda vale a pena?" |
+| `next_due` passou 3 dias sem vínculo | "Streaming X não apareceu em 30/11. Cancelou ou ainda não lançou?" → oferece `sub charge` ou `sub skip` |
+| cobrança vinculada com valor ≠ `amount` | "Streaming X veio R$ 61,47 (era R$ 49,77). Atualizo o valor?" → `sub edit --amount` |
+| alerta de fatura (já existe para a Fatura Nubank, vence 11) | "Na fatura do Nubank, R$ X são assinaturas (Streaming X, …)." Soma dos gastos ligados com `bank = Nubank` no período da fatura. |
 | 1º dia do mês / check-in semanal | "Você tem N assinaturas ativas, R$ X/mês (Y% do orçamento de Assinaturas)." |
 | gasto novo em Assinaturas sem vínculo | "Esse ‘Spotify’ é assinatura? Quer que eu acompanhe?" → `sub add --from-tx` |
 
@@ -315,7 +315,7 @@ A fonte é sempre `buffet sub due --days 7`. O chat não precisa calcular nada �
 ### Entra agora (MVP, opção A)
 1. Migration aditiva: `buffet_subscriptions` + `buffet_transactions.subscription_id` + RLS/grants + função `buffet_sub_advance`.
 2. CLI: `sub add` (com `--from-tx`), `list`, `charge`, `link`, `unlink`, `skip`, `edit`, `pause`/`resume`/`cancel`, `due`. Mais o `expense --sub` com o vínculo automático por `match`.
-3. Migração do Meli+ (depois de confirmar o cartão e o ciclo, §9): `sub add … --from-tx 5a5c6066…`.
+3. Migração do Streaming X (depois de confirmar o cartão e o ciclo, §9): `sub add … --from-tx <id>`.
 4. App: tipo + `Spec` no `store.ts` (`subscription_id` também no `toRow`/`load` de transações). Tela Assinaturas em Dívidas (lista, detalhe, formulário, "Cobrou?"). Selo ↻ em Gastos e ação ⋯ › "Acompanhar como assinatura". Assinaturas em Próximos vencimentos no Hoje.
 5. Check-in do chat com as 4 primeiras linhas da tabela 7.2.
 
@@ -337,7 +337,7 @@ Não muda: `monthSummary`, Orçamento, gráficos, CSV e `buffet_card_payments`.
 ## 9. Perguntas para o Kaluan
 
 1. **Opção A** está ok? (tabela de assinaturas + vínculo no gasto, sem tirar o gasto do total)
-2. **Meli+**: é **mensal** ou **anual**? Em **qual cartão** cai? (o lançamento está como `bank = "Cartão"`)
+2. **Streaming X**: é **mensal** ou **anual**? Em **qual cartão** cai? (o lançamento está como `bank = "Cartão"`)
 3. **Onde mora**: dentro de Dívidas como `Parcelas | Assinaturas` está bom? Quer renomear a aba para **"Fixos"**?
 4. **Vínculo automático** no `buffet expense` (quando o merchant bate com uma assinatura) ou prefere que o chat sempre pergunte?
 5. **Lembrete padrão**: 2 dias antes está bom? E para as anuais, 10 dias?

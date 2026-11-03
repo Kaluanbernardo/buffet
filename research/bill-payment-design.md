@@ -21,10 +21,10 @@ Pagar a fatura não é consumo: o dinheiro sai da conta corrente para quitar uma
 ### Estado real do banco (consulta só de leitura, 30/10)
 
 - Já existe uma fatura lançada como gasto:
-  `1ea29ba2-…` · 30/10 · **R$ 767,79** · merchant "Fatura cartão" · categoria **Outros** · bank **Inter** · note "pagamento de fatura".
-  Com isso o gasto de outubro aparece como R$ 875,35, quando o valor certo é R$ 107,56, e "Outros" estoura o orçamento.
-- `buffet_app_config` tem as colunas **`cash_balance`** (12.097,41) e **`cash_balance_bank`** ("Nubank"), mas **nenhuma migration do repo cria essas colunas**. O schema do banco está à frente do repo e isso precisa ser registrado na migration.
-- O `cash_balance` foi atualizado 6 s depois do lançamento da fatura. Tudo indica que o chat já descontou os R$ 767,79 do saldo à mão. A migration de dados **não deve** descontar de novo.
+  `<id>` · 30/10 · **R$ 70,16** · merchant "Fatura cartão" · categoria **Outros** · bank **Inter** · note "pagamento de fatura".
+  Com isso o gasto de outubro aparece como R$ 74,93, quando o valor certo é R$ 97,13, e "Outros" estoura o orçamento.
+- `buffet_app_config` tem as colunas **`cash_balance`** (64,65) e **`cash_balance_bank`** ("Nubank"), mas **nenhuma migration do repo cria essas colunas**. O schema do banco está à frente do repo e isso precisa ser registrado na migration.
+- O `cash_balance` foi atualizado 6 s depois do lançamento da fatura. Tudo indica que o chat já descontou os R$ 70,16 do saldo à mão. A migration de dados **não deve** descontar de novo.
 - Não há triggers nas tabelas `buffet_*`. Hoje o `cash_balance` é um número informado à mão, não é calculado.
 
 ### Por que o `cash_balance` é o "inverso" dos gastos
@@ -130,7 +130,7 @@ Marcar como fatura pela categoria (`category = 'Fatura'`) e excluir essa categor
 - `data/store.ts`: ler `kind` e `paid_from` no `load`, enviar no `toRow`.
 - `data/derive.ts`: `export const isExpense = (t) => (t.kind ?? 'expense') === 'expense'`. `monthSummary` filtra `tx` por `isExpense` e expõe `bills` (faturas do mês) e `billsTotal`. Assim `spent`, `cats`, `orphan`, `perDay`, `over`, `categoryShare(m.tx)` e `dailySpend` ficam corretos sem mais nada.
 - `screens/Gastos.tsx`: `scope` usa `isExpense` para total, gráficos e chips. No extrato, a fatura aparece **apagada**, com ícone de transferência e a legenda "Fatura Inter · não conta como gasto", sem entrar no total do dia. É o mesmo padrão do Nubank, em que "Pagamento de fatura" aparece no extrato da conta mas não no resumo de gastos.
-- `screens/Hoje.tsx`: "Gastos recentes" igual a Gastos. Opcionalmente, uma linha discreta no card do mês: "Faturas pagas: R$ 767,79".
+- `screens/Hoje.tsx`: "Gastos recentes" igual a Gastos. Opcionalmente, uma linha discreta no card do mês: "Faturas pagas: R$ 70,16".
 - `lib/csv.ts`: nova coluna `tipo`.
 - `components/Actions.tsx` (fase 2): seletor "Gasto | Pagar fatura" no Novo lançamento.
 
@@ -162,16 +162,16 @@ Nas três opções o `cash_balance` continua sendo um **número informado** (sna
 3. **Menor mudança segura:** migration aditiva com default, `update` de uma linha, e o `store.ts` atual já convive com a coluna nova.
 4. **Base para o próximo passo:** `transfer` (Nubank → Inter), `refund` e `income` cabem no mesmo `check`, e `buffet_incomes` pode um dia virar `kind='income'`.
 
-O risco de "esquecer o filtro" se controla com **um helper (`isExpense`) e uma view (`buffet_expenses`)**, mais um teste rápido: o gasto de outubro precisa dar R$ 107,56 depois da reclassificação.
+O risco de "esquecer o filtro" se controla com **um helper (`isExpense`) e uma view (`buffet_expenses`)**, mais um teste rápido: o gasto de outubro precisa dar R$ 97,13 depois da reclassificação.
 
 ### Pergunta para o Kaluan antes de aplicar
 
 > **As compras do cartão estão sendo lançadas uma a uma?**
-> A fatura do Inter (R$ 767,79) foi paga em 30/10, mas o Buffet só existe desde 29/10, então essas compras são de antes e nunca foram lançadas. Tirar a fatura dos gastos é o correto (outubro fica em R$ 107,56). A partir de agora, porém, se alguma compra no cartão **não** for lançada, ela some dos gastos. Se a ideia for lançar só a fatura (sem detalhar as compras), a alternativa é tratar a fatura como gasto em "Cartão (não detalhado)". Nesse caso a separação não vale para esse cartão.
+> A fatura do Inter (R$ 70,16) foi paga em 30/10, mas o Buffet só existe desde 29/10, então essas compras são de antes e nunca foram lançadas. Tirar a fatura dos gastos é o correto (outubro fica em R$ 97,13). A partir de agora, porém, se alguma compra no cartão **não** for lançada, ela some dos gastos. Se a ideia for lançar só a fatura (sem detalhar as compras), a alternativa é tratar a fatura como gasto em "Cartão (não detalhado)". Nesse caso a separação não vale para esse cartão.
 
 Mais duas confirmações:
 - A fatura de 30/10 foi paga **de qual conta**? O `cash_balance_bank` é Nubank e o cartão é Inter. A proposta é `paid_from = 'Nubank'`.
-- O saldo de R$ 12.097,41 **já** está com os R$ 767,79 descontados? Pelo horário parece que sim. Se estiver, a migração não mexe no saldo.
+- O saldo de R$ 64,65 **já** está com os R$ 70,16 descontados? Pelo horário parece que sim. Se estiver, a migração não mexe no saldo.
 
 ---
 
@@ -200,7 +200,7 @@ Mais duas confirmações:
    ```
    Os grants de coluna não mudam: o bot e o authenticated já têm `insert` e `update` na tabela inteira.
 
-2. **CLI:** `pay-bill` (com débito atômico opcional do `cash_balance`), `list` com coluna `kind` e total só de gastos, aviso de `/fatura/i` no `expense`, `kind` no `import-jsonl`, README atualizado ("paguei a fatura do Inter" → `buffet pay-bill 767,79 --card Inter --from Nubank`).
+2. **CLI:** `pay-bill` (com débito atômico opcional do `cash_balance`), `list` com coluna `kind` e total só de gastos, aviso de `/fatura/i` no `expense`, `kind` no `import-jsonl`, README atualizado ("paguei a fatura do Inter" → `buffet pay-bill 70,16 --card Inter --from Nubank`).
 
 3. **PWA:** `types.ts`, `store.ts` (`kind` e `paid_from` no load e no `toRow`), `isExpense` em `derive.ts` aplicado em `monthSummary` e Gastos, linha "não conta como gasto" no extrato, coluna `tipo` no CSV. Validar com `npm run build` e conferir Hoje, Gastos e Orçamento de outubro.
 
@@ -208,11 +208,11 @@ Mais duas confirmações:
    ```sql
    update public.buffet_transactions
       set kind = 'bill_payment', category = 'Fatura', merchant = 'Fatura Inter', paid_from = 'Nubank'
-    where id = '1ea29ba2-ca2f-4da1-87c6-f9e714c9b513'
+    where id = '<id>'
    returning id, kind, amount, bank, paid_from
    ```
    O `cash_balance` não é alterado.
 
-5. **Conferência:** `buffet list --month 2026-10` dá total R$ 107,56, com a fatura listada à parte. Hoje mostra R$ 107,56 gastos, e "Outros" deixa de aparecer estourado no Orçamento.
+5. **Conferência:** `buffet list --month 2026-10` dá total R$ 97,13, com a fatura listada à parte. Hoje mostra R$ 97,13 gastos, e "Outros" deixa de aparecer estourado no Orçamento.
 
 **Rollback:** `update … set kind='expense'` na linha, mais `drop view buffet_expenses` e `alter table … drop column kind, drop column paid_from` (o PWA e o CLI antigos ignoram as colunas).

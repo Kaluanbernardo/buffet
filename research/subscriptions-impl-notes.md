@@ -14,10 +14,10 @@ scripts/buffet admin-sql "$(cat supabase/migrations/20261031120000_buffet_subscr
 Antes disso o app continua funcionando: o store detecta a tabela ausente (`subscriptionsReady = false`), a aba
 Assinaturas mostra "migration pendente" e nada de assinatura é sincronizado. Depois de aplicar, basta recarregar o app.
 
-## 2. Cadastrar o Meli+
+## 2. Cadastrar o Streaming X
 
 ```sh
-buffet sub add 74,90 --name "Meli+" --cycle mensal --card Nubank --match meli --from-tx 5a5c6066-2e07-4a67-97f5-4a37e783cff1
+buffet sub add 49,77 --name "Streaming X" --cycle mensal --card Nubank --match streaming --from-tx <id>
 ```
 
 Isso cria a assinatura a partir do gasto (data dele = início do ciclo; próxima = +1 mês) e vincula o gasto (↻ em Gastos).

@@ -21,7 +21,7 @@ export const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'A
 export const fmtDate = (iso: string) => iso.split('-').reverse().join('/')
 export const uid = () => crypto.randomUUID()
 
-/** Parse "29,47", "1.234,56" or "29.47" into a number (NaN when empty/invalid). */
+/** Parse "10,50", "1.234,56" or "10.50" into a number (NaN when empty/invalid). */
 export const parseMoney = (s: string) => {
   const t = s.trim().replace(/\s|R\$/g, '')
   if (!t) return NaN

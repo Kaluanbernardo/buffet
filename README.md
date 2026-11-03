@@ -29,7 +29,7 @@ O assistente lança gastos direto no Supabase, como o `fit` do fitness: `scripts
 Management API em `begin; set local role bot; …; commit;` (RLS + grants do role `bot`, `source='bot'`,
 `user_id` = dono via `public.buffet_owner()`). O app recarrega os dados ao voltar para o primeiro plano.
 ```bash
-scripts/buffet expense 107,56 --merchant Bar --category Lazer [--date ontem] [--bank Nubank] [--note "..."]
+scripts/buffet expense 97,13 --merchant Bar --category Lazer [--date ontem] [--bank Nubank] [--note "..."]
 scripts/buffet list                      # mês atual; --date 29/10 ou --month 2026-10
 scripts/buffet del <id>                  # desfaz um lançamento errado
 scripts/buffet import-jsonl data/expenses.jsonl   # idempotente pelo id
@@ -42,7 +42,7 @@ Quando o Kaluan disser no chat "gastei 32 no mercado no Nubank", o assistente ro
 totais e gráficos; no PWA aparece apagada no extrato de Gastos ("Fatura Inter · Não conta como gasto") e numa linha
 discreta no card do mês em Hoje. "Paguei a fatura do Inter com o Nubank" →
 ```bash
-scripts/buffet pay-bill 767,79 --card Inter --from Nubank   # debita o cash_balance se --from = cash_balance_bank
+scripts/buffet pay-bill 70,16 --card Inter --from Nubank   # debita o cash_balance se --from = cash_balance_bank
 scripts/buffet pay-bill 500 --card Inter --no-cash          # só registra, sem mexer no saldo
 scripts/buffet del-bill <id> [--restore-cash]               # desfaz; --restore-cash devolve ao saldo
 ```
@@ -56,12 +56,12 @@ Fatura = linhas `credit` agrupadas por `(bank, bill_month)`; o valor que o app d
 `buffet_debts kind='bill'` e a fatura vale `max(informado, detalhado)` — nunca a soma dos dois.
 ```bash
 scripts/buffet expense 5 --merchant Café --category Alimentação --debit         # desconta o saldo
-scripts/buffet expense 28,77 --merchant Uber --category Transporte --credit Nubank
-scripts/buffet expense 689 --merchant Sapatos --category Vestimenta --credit Nubank --x 10   # plano + 10 linhas
+scripts/buffet expense 36,00 --merchant Uber --category Transporte --credit Nubank
+scripts/buffet expense 100 --merchant Tênis --category Vestimenta --credit Nubank --x 10   # plano + 10 linhas
 scripts/buffet bill                      # fatura aberta: itens, não detalhado, total, saldo depois de pagar
 scripts/buffet bills                     # faturas a pagar + comprometido + "livre de parcelas depois de"
-scripts/buffet bill set 2243 --card Nubank            # valor informado pelo banco (fatura aberta)
-scripts/buffet pay-bill 2243 --card Nubank --from Nubank   # marca a fatura paga + installments_paid dos planos
+scripts/buffet bill set 100 --card Nubank            # valor informado pelo banco (fatura aberta)
+scripts/buffet pay-bill 100 --card Nubank --from Nubank   # marca a fatura paga + installments_paid dos planos
 scripts/buffet card set Nubank --closing 4 --due 11 · plans · del-plan <id> [--from AAAA-MM]
 ```
 No PWA, linhas com data futura ficam fora de Hoje e dos totais de Gastos (aparecem como "Agendadas" no mês);

@@ -4,7 +4,7 @@ import { today } from '../lib/format'
 export const DEFAULT_CATEGORIES = ['Alimentação', 'Transporte', 'Moradia', 'Saúde', 'Lazer', 'Assinaturas', 'Educação', 'Vestimenta', 'Mercado', 'Doação', 'Fitness', 'Jogos', 'Pró-vida', 'Telefonia e internet', 'Outros']
 
 export const seed = (): BuffetData => ({
-  transactions: [{ id: 'seed-1', date: today(), amount: 29.47, merchant: 'Mangará', category: 'Alimentação', bank: 'Nubank' }],
+  transactions: [{ id: 'seed-1', date: today(), amount: 10.00, merchant: 'Padaria', category: 'Alimentação', bank: 'Nubank' }],
   cardPayments: [],
   subscriptions: [],
   budgets: DEFAULT_CATEGORIES.map((category) => ({ category, monthly_limit: 0 })),

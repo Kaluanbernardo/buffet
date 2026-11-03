@@ -325,7 +325,7 @@ function SubForm({ sub, from, onDone }: { sub?: Subscription; from?: Transaction
       </p>}
       <div>
         <label htmlFor="sf-name" className="label">Nome</label>
-        <input id="sf-name" data-autofocus className="input" placeholder="Ex.: Netflix, Meli+" autoComplete="off" aria-invalid={tried && !nameOk}
+        <input id="sf-name" data-autofocus className="input" placeholder="Ex.: Netflix, Spotify" autoComplete="off" aria-invalid={tried && !nameOk}
           value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
         {tried && !nameOk && <p className="mt-2 text-sm text-negative">Dê um nome à assinatura.</p>}
       </div>

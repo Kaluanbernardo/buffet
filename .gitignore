@@ -4,3 +4,12 @@ dist
 .env
 *.tsbuildinfo
 claude_f0.*
+
+# local/private
+research/screens/
+research/claude_bench.*
+*_TASK.md
+.claude/
+.taste-skill/
+data/*.jsonl
+*.jsonl

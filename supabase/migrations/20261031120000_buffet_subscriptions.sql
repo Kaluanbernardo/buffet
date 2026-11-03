@@ -4,7 +4,7 @@
 create table if not exists public.buffet_subscriptions (
   id text primary key default gen_random_uuid()::text,
   user_id uuid not null default public.buffet_owner(),
-  name text not null,                                           -- "Meli+"
+  name text not null,                                           -- "Netflix"
   amount numeric(12,2) not null check (amount > 0),             -- valor esperado por ciclo
   cycle text not null default 'monthly' check (cycle in ('monthly', 'yearly')),
   next_due date not null,                                       -- próxima cobrança esperada
@@ -13,7 +13,7 @@ create table if not exists public.buffet_subscriptions (
   status text not null default 'active' check (status in ('active', 'paused', 'canceled')),
   remind_days int not null default 2 check (remind_days between 0 and 30),
   match text,                                                   -- trecho do merchant p/ vincular sozinho ("meli")
-  cancel_hint text,                                             -- "app ML › Meli+ › Cancelar" ou URL
+  cancel_hint text,                                             -- "app › Conta › Cancelar" ou URL
   note text,
   started_on date,                                              -- 1ª cobrança; o dia dela ancora o ciclo (31 → 28/fev → 31/mar)
   canceled_on date,

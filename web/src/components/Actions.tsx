@@ -87,7 +87,7 @@ function NewExpenseForm({ onDone }: { onDone: (msg: string, undo: () => void) =>
 
       <div>
         <label htmlFor="nv-merchant" className="label">Onde</label>
-        <input id="nv-merchant" className="input" placeholder="Ex.: Mangará, Uber, farmácia" autoComplete="off"
+        <input id="nv-merchant" className="input" placeholder="Ex.: Padaria, Uber, farmácia" autoComplete="off"
           aria-invalid={tried && !merchantOk} value={f.merchant} onChange={(e) => setF({ ...f, merchant: e.target.value })} />
         {tried && !merchantOk && <p className="mt-2 text-sm text-negative">Diga onde foi o gasto.</p>}
       </div>

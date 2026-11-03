@@ -1,7 +1,7 @@
 import type { BuffetData } from './types'
 import { today } from '../lib/format'
 
-export const DEFAULT_CATEGORIES = ['Alimentação', 'Transporte', 'Moradia', 'Saúde', 'Lazer', 'Assinaturas', 'Educação', 'Vestimenta', 'Mercado', 'Doação', 'Fitness', 'Jogos', 'Outros']
+export const DEFAULT_CATEGORIES = ['Alimentação', 'Transporte', 'Moradia', 'Saúde', 'Lazer', 'Assinaturas', 'Educação', 'Vestimenta', 'Mercado', 'Doação', 'Fitness', 'Jogos', 'Pró-vida', 'Outros']
 
 export const seed = (): BuffetData => ({
   transactions: [{ id: 'seed-1', date: today(), amount: 29.47, merchant: 'Mangará', category: 'Alimentação', bank: 'Nubank' }],

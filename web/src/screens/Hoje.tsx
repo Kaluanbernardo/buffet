@@ -1,11 +1,13 @@
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
-import { bills, categoryShare, dailySpend, daysFrom, daysUntilDue, dueLabel, isOpen, monthSummary, posted, subDueLabel } from '../data/derive'
+import { bills, categoryShare, dailySpend, daysFrom, daysUntilDue, dueLabel, isOpen, monthSummary, posted, receivable, subDueLabel } from '../data/derive'
 import { dayLabel, money, money0, monthKey, plural, shortMonth } from '../lib/format'
-import { CategoryIcon, Columns, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, ThemeButton, toneFor } from '../components/ui'
+import { CategoryIcon, Columns, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, Sheet, ThemeButton, toneFor } from '../components/ui'
 import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
+import { ReceivableList, SplitLine } from '../components/Split'
 import { SubIcon } from './Assinaturas'
 
 export default function Hoje() {
@@ -18,6 +20,8 @@ export default function Hoje() {
   const { clock } = m
   const hasPlan = m.limit > 0
   const tone = toneFor(m.spent, m.limit, clock.elapsed)
+  const owed = receivable(data)
+  const [owedOpen, setOwedOpen] = useState(false)
   const dateLine = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Sao_Paulo' })
 
   const finding = (() => {
@@ -113,6 +117,15 @@ export default function Hoje() {
         <span className="money font-semibold">{data.config.cash_balance == null ? <span className="text-faint">—</span> : money(data.config.cash_balance)}</span>
       </section>
 
+      {/* Money others still owe on split spends. Not in the balance until it arrives. */}
+      {owed.total > 0 && (
+        <button type="button" onClick={() => setOwedOpen(true)} aria-haspopup="dialog"
+          className="card mt-3 flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-raised">
+          <span className="min-w-0 text-sm font-semibold text-muted">A receber<span className="font-normal text-faint"> · {plural(owed.rows.length, 'gasto', 'gastos')}</span></span>
+          <span className="money flex flex-none items-center gap-1.5 font-semibold">{money(owed.total)}<ChevronRight size={16} className="text-faint" aria-hidden /></span>
+        </button>
+      )}
+
       {/* 2 · Where the month went */}
       <Section title={`Para onde foi em ${clock.name}`}>
         {share.length === 0 ? (
@@ -176,6 +189,7 @@ export default function Hoje() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-semibold">{t.merchant}</p>
                   <p className="text-[13px] text-faint">{dayLabel(t.date)} · {t.category}</p>
+                  <SplitLine t={t} />
                 </div>
                 <span className="money flex-none font-semibold">{money(t.amount)}</span>
               </li>
@@ -210,6 +224,10 @@ export default function Hoje() {
         )}
       </Section>
       </>} />
+
+      <Sheet open={owedOpen && owed.rows.length > 0} onClose={() => setOwedOpen(false)} title="A receber">
+        <ReceivableList rows={owed.rows} total={owed.total} onClose={() => setOwedOpen(false)} />
+      </Sheet>
     </div>
   )
 }

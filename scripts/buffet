@@ -7,7 +7,7 @@ RLS e grants mínimos do bot valem. Toda escrita leva source='bot'; user_id cai 
 Datas: AAAA-MM-DD, 'hoje', 'ontem' ou dd/mm. Valores: 107.56 ou 107,56.
 
 GASTOS (method = meio de pagamento; bank = instituição)
-  buffet expense <valor> --merchant X --category Y [--date d] [--note t] [--sub <sub> | --no-sub]
+  buffet expense <valor> --merchant X --category Y [--date d] [--note t] [--sub <sub> | --no-sub] [--split] [--share 50]
                  (--debit | --pix) [--bank b] [--no-cash]
                  | --credit <cartão> [--x N [--parcela v] [--first-bill AAAA-MM]]
         lança um gasto (padrão: hoje); imprime o id.
@@ -16,9 +16,19 @@ GASTOS (method = meio de pagamento; bank = instituição)
         --x N: parcelado — grava o plano (buffet_debts) + N linhas, uma por parcela (data = compra + k−1 meses,
         fatura = 1ª + k−1). Parcela = --parcela ou total/N truncado; a última absorve o arredondamento.
         Sem --sub, vincula sozinho se o merchant bater com o match de UMA assinatura ativa com próxima a ±7 dias
+        --split: já lança dividido; --share = a SUA parte em % (padrão 50; sozinho já implica --split). Não vale com --x
   buffet del <id>                             apaga um lançamento (parcela de plano: use del-plan)
   buffet list [--date d | --month AAAA-MM]    lançamentos (padrão: mês atual) + total; futuras marcadas "agendada"
   buffet import-jsonl <arquivo>               importa data/expenses.jsonl (idempotente pelo id)
+
+DIVIDIDO E REEMBOLSO (o valor cheio nunca muda; somas de gasto usam effective_amount = amount − reimbursed_amount; fatura segue cheia)
+  <gasto> = id, começo do id (6+ caracteres) ou trecho do merchant; busca ambígua aborta e lista as opções
+  buffet split <gasto> [--share 50]           marca ou ajusta a SUA parte, em %; não mexe no caixa. Parcela de plano: não
+  buffet unsplit <gasto>                      desfaz a divisão; só sem reembolso registrado
+  buffet reimburse <gasto> [--amount v] [--date d] [--no-cash]
+        registra o recebimento (padrão: tudo o que falta, hoje) e soma ao cash_balance; --no-cash: entrou em outro lugar
+  buffet unreimburse <gasto>                  zera o reembolso e tira do cash_balance só o que tinha entrado
+  buffet receivable                           o que falta receber: lista e total
 
 CARTÕES E FATURAS (fatura = gastos method=credit agrupados por (bank, bill_month); pagamento não é gasto)
   buffet card set <cartão> --closing 4 --due 11   ciclo do cartão (jsonb banks de buffet_app_config)
@@ -92,7 +102,8 @@ def run(query):
             msg = json.loads(e.read()).get("message", "")
         except Exception:
             msg = str(e)
-        raise SqlError(f"erro {e.code}: {msg}")
+        raised = re.search(r"ERROR:\s+P000[12]: (.*)", msg)   # raise exception das nossas funções: só a mensagem
+        raise SqlError(f"erro: {raised.group(1)}" if raised else f"erro {e.code}: {msg}")
 
 
 # Bloqueia tentativas de sair do role bot dentro da mesma requisição.
@@ -276,12 +287,12 @@ def close_date(cy, mk):
 
 
 def cmd_expense(a):
-    pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note", "sub", "credit", "x", "parcela", "first-bill"),
-                  bools=("no-sub", "debit", "pix", "no-cash"))
+    pos, o = opts(a, flags=("merchant", "category", "date", "bank", "note", "sub", "credit", "x", "parcela", "first-bill", "share"),
+                  bools=("no-sub", "debit", "pix", "no-cash", "split"))
     if len(pos) != 1 or not o.get("merchant") or not o.get("category"):
         sys.exit("uso: buffet expense <valor> --merchant X --category Y [--date d] [--note t] "
                  "[--debit | --pix [--bank b] [--no-cash] | --credit <cartão> [--x N [--parcela v] [--first-bill AAAA-MM]]] "
-                 "[--sub <sub> | --no-sub]")
+                 "[--sub <sub> | --no-sub] [--split] [--share 50]")
     if o.get("sub") and o.get("no-sub"):
         sys.exit("erro: use --sub ou --no-sub, não os dois")
     methods = [m for m in ("debit", "pix", "credit") if o.get(m)]
@@ -297,6 +308,11 @@ def cmd_expense(a):
               file=sys.stderr)
     date, amount = pdate(o.get("date")), pmoney(pos[0])
     category = pcategory(o["category"])
+    share = pshare(o.get("share")) if o.get("split") or o.get("share") else None
+    if share is not None and o.get("x"):
+        sys.exit("erro: parcelado dividido não existe nesta versão; lance sem --split/--share")
+    if share is not None and round(amount * (100 - share) / 100, 2) <= 0:
+        sys.exit("erro: com essa divisão não sobra nada a receber")
     if method == "credit" and o.get("x"):
         return expense_plan(o, date, amount, category)
     sub = resolve_sub(o["sub"]) if o.get("sub") else None if o.get("no-sub") else auto_sub(o["merchant"], date)
@@ -314,14 +330,17 @@ def cmd_expense(a):
     if norm(bank) in ("cartao", "credito"):
         print("aviso: qual cartão? Use --credit <cartão> (ex.: --credit Nubank)", file=sys.stderr)
     insert = ("insert into public.buffet_transactions (date, amount, merchant, category, bank, method, bill_month, note, source"
-              + (", subscription_id" if sub else "") + ") values ("
+              + (", subscription_id" if sub else "") + (", split_share_pct" if share is not None else "") + ") values ("
               f"{lit(date)}, {amount}, {lit(o['merchant'])}, {lit(category)}, {lit(bank)}, {lit(method)}, {lit(bill)}, "
-              f"{lit(o.get('note'))}, 'bot'" + (f", {lit(sub['id'])}" if sub else "") + f") returning {TX_COLS}, subscription_id")
+              f"{lit(o.get('note'))}, 'bot'" + (f", {lit(sub['id'])}" if sub else "") + (f", {share}" if share is not None else "")
+              + f") returning {TX_COLS}, subscription_id, {SPLIT_COLS}")
     cash = method in ("debit", "pix") and not o.get("no-cash")
     ctes = [f"t as ({insert})"] + ([ADVANCE_FROM_T] if sub else []) + ([CASH_FROM_T] if cash else [])
     extra = (["(select next_due from u) as next_due"] if sub else []) + (["(select cash_balance from c) as cash_balance"] if cash else [])
     rows = bot(f"with {', '.join(ctes)} select t.*{''.join(', ' + e for e in extra)} from t")
     table(rows, TX_COLS.split(", ") + (["next_due"] if sub else []) + (["cash_balance"] if cash else []))
+    if share is not None:
+        print(split_line(rows[0]), file=sys.stderr)
     if bill:
         cy = cycle(cfg, bank)
         print(f"fatura {bank} {mon(bill)} (fecha {close_date(cy, bill):%d/%m}, vence {due_date(cy, bill):%d/%m})", file=sys.stderr)
@@ -391,20 +410,23 @@ def cmd_list(a):
             sys.exit("erro: --month no formato AAAA-MM")
         where = f"to_char(date, 'YYYY-MM') = {lit(m)}"
     try:   # ↻ nome da assinatura ligada; sem a migration de assinaturas, a lista simples
-        rows = bot(f"select {', '.join('t.' + c for c in TX_COLS.split(', '))}, '↻ ' || s.name as sub "
+        rows = bot(f"select {', '.join('t.' + c for c in (TX_COLS + ', ' + SPLIT_COLS).split(', '))}, '↻ ' || s.name as sub "
                    "from public.buffet_transactions t left join public.buffet_subscriptions s on s.id = t.subscription_id "
                    f"where {where.replace('date', 't.date')} order by t.date desc, t.created_at desc")
     except SqlError:
-        rows = bot(f"select {TX_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
+        rows = bot(f"select {TX_COLS}, {SPLIT_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
     t = today().isoformat()
     for r in rows:
         if str(r["date"]) > t:
             r["note"] = "(agendada) " + (r.get("note") or "")
-    table(rows)
+        r["parte"] = split_tag(r)
+    cols = TX_COLS.split(", ") + (["sub"] if any("sub" in r for r in rows) else []) + (["parte"] if any(r["parte"] for r in rows) else [])
+    table(rows, cols)
     if rows:
         future = [r for r in rows if str(r["date"]) > t]
-        print(f"\n{len(rows)} lançamento(s) · total {brl(sum(float(r['amount']) for r in rows))}"
-              + (f" (inclui {len(future)} agendada(s), {brl(sum(float(r['amount']) for r in future))})" if future else ""))
+        spend = lambda xs: brl(sum(float(r["effective_amount"]) for r in xs))
+        print(f"\n{len(rows)} lançamento(s) · total {spend(rows)}"
+              + (f" (inclui {len(future)} agendada(s), {spend(future)})" if future else ""))
     bills = bot(f"select {BILL_COLS} from public.buffet_card_payments where {where} order by date desc, created_at desc")
     if bills:
         print("\npagamentos de fatura (fora do total):")
@@ -446,6 +468,128 @@ def cmd_pay_bill(a):
         print(f"fatura {card} {mon(month)} paga", file=sys.stderr)
     if paid_from and not o.get("no-cash") and rows and rows[0].get("cash_balance") is None:
         print(f"aviso: {paid_from} não é a conta do saldo (cash_balance_bank); cash_balance não mudou", file=sys.stderr)
+
+
+# ---------------------------------------------------------------- dividido e reembolso
+# As operações ficam em funções SQL (public.buffet_tx_*), as mesmas que o app chama: uma transação só e nenhuma regra repetida.
+SPLIT_COLS = "split_share_pct, partner_amount, reimbursed_amount, effective_amount"
+
+
+def pshare(s):
+    """A SUA parte em %; sem valor = 50."""
+    if s is None:
+        return 50.0
+    try:
+        v = round(float(str(s).replace("%", "").replace(",", ".")), 2)
+    except ValueError:
+        sys.exit(f"erro: --share inválido '{s}'")
+    if not 0 < v < 100:
+        sys.exit("erro: --share (a sua parte) precisa ficar entre 0 e 100")
+    return v
+
+
+def split_tag(r):
+    """Estado derivado (sem coluna): dividido, reembolso parcial ou reembolsado. Espelha splitState em web/src/data/derive.ts."""
+    if r.get("split_share_pct") is None:
+        return None
+    got = float(r.get("reimbursed_amount") or 0)
+    owed = round(float(r["partner_amount"]) - got, 2)
+    if not got:
+        return f"dividido · a receber {brl(owed)}"
+    if owed > 0:
+        return f"reembolso parcial · a receber {brl(owed)}"
+    return f"reembolsado · sua parte {brl(float(r['effective_amount']))}"
+
+
+def split_line(r):
+    return f"{r['merchant']} · {brl(float(r['amount']))} · sua parte {float(r['split_share_pct']):g}% · {split_tag(r)}"
+
+
+TX_FIND = f"id, date, amount, merchant, bank, debt_id, created_at, {SPLIT_COLS}"
+
+
+def resolve_tx(key, target, what):
+    """id exato ou começo do id (6+) em qualquer linha; senão, trecho do merchant entre as linhas de `target`. Ambíguo aborta."""
+    hit = bot(f"select {TX_FIND} from public.buffet_transactions where id = {lit(key)}")
+    if not hit and len(key) >= 6:
+        hit = bot(f"select {TX_FIND} from public.buffet_transactions where left(id, {len(key)}) = {lit(key)}")
+    if not hit:
+        rows = bot(f"select {TX_FIND} from public.buffet_transactions where {target} order by date desc, created_at desc")
+        hit = [r for r in rows if norm(key) and norm(key) in norm(r["merchant"])]
+    if not hit:
+        sys.exit(f"erro: '{key}' não bate com nenhum gasto {what}")
+    if len(hit) > 1:
+        # O comando pode mover dinheiro: nunca escolhe sozinho.
+        sys.exit(f"erro: '{key}' é ambíguo; use o id:\n" + "\n".join(
+            f"  {r['id'][:8]}  {dm(r['date'])}  {brl(float(r['amount']))}  {r['merchant']}" + (f"  ({split_tag(r)})" if split_tag(r) else "")
+            for r in hit))
+    return hit[0]
+
+
+def tx_call(fn, *args):
+    rows = bot(f"select public.{fn}({', '.join(args)}) as r")
+    r = rows[0]["r"]
+    return json.loads(r) if isinstance(r, str) else r
+
+
+def cash_note(r):
+    delta = float(r.get("cash_delta") or 0)
+    bal = r.get("cash_balance")
+    return f"caixa {'+' if delta > 0 else '−'}{brl(abs(delta))} → {brl(float(bal))}" if delta and bal is not None else "caixa não mudou"
+
+
+def cmd_split(a):
+    pos, o = opts(a, flags=("share",))
+    if len(pos) != 1:
+        sys.exit("uso: buffet split <gasto> [--share 50]")
+    since = (today() - dt.timedelta(days=60)).isoformat()
+    t = resolve_tx(pos[0], f"debt_id is null and (split_share_pct is not null or date >= {lit(since)})", "dos últimos 60 dias")
+    print(split_line(tx_call("buffet_tx_split", lit(t["id"]), str(pshare(o.get("share"))))))
+
+
+def cmd_unsplit(a):
+    if len(a) != 1:
+        sys.exit("uso: buffet unsplit <gasto>")
+    t = resolve_tx(a[0], "split_share_pct is not null", "dividido")
+    r = tx_call("buffet_tx_unsplit", lit(t["id"]))
+    print(f"{r['merchant']} · {brl(float(r['amount']))} · não é mais dividido")
+
+
+def cmd_reimburse(a):
+    pos, o = opts(a, flags=("amount", "date"), bools=("no-cash",))
+    if len(pos) != 1:
+        sys.exit("uso: buffet reimburse <gasto> [--amount v] [--date d] [--no-cash]")
+    t = resolve_tx(pos[0], "partner_amount > coalesce(reimbursed_amount, 0)", "com valor a receber")
+    amount = f"{pmoney(o['amount']):.2f}" if o.get("amount") else "null"
+    cash = not o.get("no-cash")
+    r = tx_call("buffet_tx_reimburse", lit(t["id"]), amount, f"{lit(pdate(o.get('date')))}::date", "true" if cash else "false")
+    print(f"{split_line(r)} · {cash_note(r)}")
+    if cash and not float(r.get("cash_delta") or 0):
+        print("aviso: cash_balance está vazio; o reembolso foi registrado sem mexer no saldo", file=sys.stderr)
+
+
+def cmd_unreimburse(a):
+    if len(a) != 1:
+        sys.exit("uso: buffet unreimburse <gasto>")
+    t = resolve_tx(a[0], "reimbursed_amount is not null", "com reembolso registrado")
+    r = tx_call("buffet_tx_unreimburse", lit(t["id"]))
+    print(f"{split_line(r)} · {cash_note(r)}")
+
+
+def cmd_receivable(a):
+    if a:
+        sys.exit("uso: buffet receivable")
+    rows = bot(f"select {TX_FIND} from public.buffet_transactions where partner_amount > coalesce(reimbursed_amount, 0) order by date, created_at")
+    t = today().isoformat()
+    owed = lambda r: round(float(r["partner_amount"]) - float(r.get("reimbursed_amount") or 0), 2)
+    now = [r for r in rows if str(r["date"]) <= t]
+    table([{"id": r["id"][:8], "data": dm(r["date"]), "gasto": r["merchant"], "valor": brl(float(r["amount"])),
+            "sua parte": f"{float(r['split_share_pct']):g}%", "recebido": brl(float(r.get("reimbursed_amount") or 0)),
+            "a receber": brl(owed(r))} for r in now])
+    if now:
+        print(f"\n{len(now)} gasto(s) · total a receber {brl(sum(owed(r) for r in now))}")
+    if len(now) < len(rows):
+        print(f"(e {len(rows) - len(now)} com data futura, que só entram no total quando chegar a data)")
 
 
 # ---------------------------------------------------------------- cartões e faturas
@@ -967,7 +1111,8 @@ def cmd_sub(a):
 
 COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-jsonl": cmd_import_jsonl,
             "pay-bill": cmd_pay_bill, "del-bill": cmd_del_bill, "sub": cmd_sub, "card": cmd_card, "bill": cmd_bill,
-            "bills": cmd_bills, "plans": cmd_plans, "del-plan": cmd_del_plan}
+            "bills": cmd_bills, "plans": cmd_plans, "del-plan": cmd_del_plan, "split": cmd_split, "unsplit": cmd_unsplit,
+            "reimburse": cmd_reimburse, "unreimburse": cmd_unreimburse, "receivable": cmd_receivable}
 
 
 def main(a):

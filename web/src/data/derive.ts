@@ -1,15 +1,72 @@
-import type { Bank, Budget, BudgetGroup, BuffetData, CardPayment, Debt, SubCycle, Subscription, Transaction } from './types'
+import type { Bank, Budget, BudgetGroup, BuffetData, CardPayment, Debt, SplitAction, SubCycle, Subscription, Transaction } from './types'
 import { addDays, monthClock, monthKey, parseISO, shiftMonth, today } from '../lib/format'
 
 const cents = (v: number) => Math.round(v * 100) / 100
+
+// ---------------------------------------------------------------- dividido e reembolso
+
+type Spendable = { amount: number; reimbursed_amount?: number }
+/** What this row weighs in spend totals. Mirrors the effective_amount column — keep the two equal. Bills and subscription prices keep `amount`. */
+export const spendOf = (t: Spendable) => cents(t.amount - (t.reimbursed_amount ?? 0))
+/** What is still to be received for this row. */
+export const owedOf = (t: Transaction) => (t.partner_amount == null ? 0 : cents(t.partner_amount - (t.reimbursed_amount ?? 0)))
+/** The other person's part. Mirrors the partner_amount column, in whole units so half a cent rounds the way Postgres does. */
+export const partnerOf = (amount: number, share: number) => Math.round(Math.round(amount * 100) * (10000 - Math.round(share * 100)) / 10000) / 100
+
+export type SplitState = 'split' | 'partial' | 'reimbursed'
+/** Derived, no column. */
+export const splitState = (t: Transaction): SplitState | null =>
+  t.split_share_pct == null ? null : !t.reimbursed_amount ? 'split' : owedOf(t) > 0 ? 'partial' : 'reimbursed'
+
+/** A receber: rows that already happened and still have money to come; a future date counts once it arrives. */
+export function receivable(data: BuffetData, ref = today()) {
+  const rows = data.transactions.filter((t) => isPosted(t, ref) && owedOf(t) > 0).sort((a, b) => a.date.localeCompare(b.date))
+  return { rows, total: cents(rows.reduce((s, t) => s + owedOf(t), 0)) }
+}
+
+/** Same rules as public.buffet_tx_* for the device-only store (no database): see supabase/migrations/*_buffet_split_reimburse.sql. */
+export function applySplit(data: BuffetData, a: SplitAction): BuffetData {
+  const t = data.transactions.find((x) => x.id === a.id)
+  if (!t) throw new Error('gasto não encontrado')
+  let next: Transaction = t
+  let cash = data.config.cash_balance ?? null
+  const got = t.reimbursed_amount ?? 0
+  const clearReimbursed = { reimbursed_amount: undefined, reimbursed_cash: undefined, reimbursed_at: undefined }
+  if (a.kind === 'split') {
+    if (t.debt_id) throw new Error('parcela de plano não pode ser dividida')
+    if (!(a.share > 0 && a.share < 100)) throw new Error('a sua parte precisa ficar entre 0% e 100%')
+    const partner = partnerOf(t.amount, a.share)
+    if (partner <= 0) throw new Error('com essa divisão não sobra nada a receber')
+    if (partner < got) throw new Error(`a parte da outra pessoa (${partner}) ficaria menor que o já recebido (${got})`)
+    next = { ...t, split_share_pct: a.share, partner_amount: partner }
+  } else if (a.kind === 'unsplit') {
+    if (t.split_share_pct == null) throw new Error('esse gasto não está dividido')
+    if (t.reimbursed_amount != null) throw new Error('esse gasto tem reembolso registrado: desfaça o reembolso antes')
+    next = { ...t, split_share_pct: undefined, partner_amount: undefined }
+  } else if (a.kind === 'reimburse') {
+    if (t.split_share_pct == null) throw new Error('esse gasto não está dividido')
+    const owed = owedOf(t)
+    if (owed <= 0) throw new Error('esse gasto já foi todo reembolsado')
+    const v = a.amount ?? owed
+    if (!(v > 0) || v > owed) throw new Error(`valor (${v}) maior que o que falta receber (${owed})`)
+    const inCash = a.cash && cash != null ? v : 0
+    if (inCash && cash != null) cash = cents(cash + inCash)
+    next = { ...t, reimbursed_amount: cents(got + v), reimbursed_cash: cents((t.reimbursed_cash ?? 0) + inCash), reimbursed_at: a.date ?? today() }
+  } else {
+    if (t.reimbursed_amount == null) throw new Error('esse gasto não tem reembolso registrado')
+    if (cash != null) cash = cents(cash - (t.reimbursed_cash ?? 0))
+    next = { ...t, ...clearReimbursed }
+  }
+  return { ...data, config: { ...data.config, cash_balance: cash }, transactions: data.transactions.map((x) => (x.id === t.id ? next : x)) }
+}
 
 /** Everything the month screens read, computed once from the rows. Defaults to the current month. */
 export function monthSummary(data: BuffetData, mk = monthKey(today())) {
   const clock = monthClock(mk)
   const tx = data.transactions.filter((t) => monthKey(t.date) === mk)
   const spentBy = new Map<string, number>()
-  for (const t of tx) spentBy.set(t.category, cents((spentBy.get(t.category) ?? 0) + t.amount))
-  const spent = cents(tx.reduce((s, t) => s + t.amount, 0))
+  for (const t of tx) spentBy.set(t.category, cents((spentBy.get(t.category) ?? 0) + spendOf(t)))
+  const spent = cents(tx.reduce((s, t) => s + spendOf(t), 0))
 
   const cats = data.budgets.map((b) => {
     const s = spentBy.get(b.category) ?? 0
@@ -153,9 +210,9 @@ export const dueLabel = (n: number) => (n === 0 ? 'Vence hoje' : n === 1 ? 'Venc
 
 export type Slice = { key: string; value: number; share: number }
 /** Spend by category, largest first; past `k` slices the tail folds into "Outras" (never a generated colour). */
-export function categoryShare(tx: { category: string; amount: number }[], k = 4): Slice[] {
+export function categoryShare(tx: (Spendable & { category: string })[], k = 4): Slice[] {
   const by = new Map<string, number>()
-  for (const t of tx) by.set(t.category, cents((by.get(t.category) ?? 0) + t.amount))
+  for (const t of tx) by.set(t.category, cents((by.get(t.category) ?? 0) + spendOf(t)))
   const total = [...by.values()].reduce((s, v) => s + v, 0)
   if (total <= 0) return []
   const sorted = [...by].sort((a, b) => b[1] - a[1])
@@ -168,30 +225,31 @@ export function categoryShare(tx: { category: string; amount: number }[], k = 4)
 export const OTHER_SLICE = 'Outras'
 
 type Day = { date: string; day: number; total: number }
-const byDate = (tx: { date: string; amount: number }[]) => {
+type Dated = Spendable & { date: string }
+const byDate = (tx: Dated[], weigh: (t: Dated) => number = spendOf) => {
   const by = new Map<string, number>()
-  for (const t of tx) by.set(t.date, (by.get(t.date) ?? 0) + t.amount)
+  for (const t of tx) by.set(t.date, (by.get(t.date) ?? 0) + weigh(t))
   return by
 }
 const dayRow = (by: Map<string, number>, iso: string): Day => ({ date: iso, day: Number(iso.slice(8, 10)), total: cents(by.get(iso) ?? 0) })
 
 /** Total spent per calendar day for the last `n` days, oldest first, today last. */
-export function dailySpend(tx: { date: string; amount: number }[], n = 30): Day[] {
+export function dailySpend(tx: Dated[], n = 30): Day[] {
   const by = byDate(tx)
   const t = today()
   return Array.from({ length: n }, (_, i) => dayRow(by, addDays(t, i - (n - 1))))
 }
 
-/** Every day of month `mk` (1st → last), including days still to come. */
-export function monthDays(tx: { date: string; amount: number }[], mk: string): Day[] {
-  const by = byDate(tx)
+/** Every day of month `mk` (1st → last), including days still to come. `weigh` = what a row adds to its day (default: the spend). */
+export function monthDays(tx: Dated[], mk: string, weigh?: (t: Dated) => number): Day[] {
+  const by = byDate(tx, weigh)
   const [y, m] = mk.split('-').map(Number)
   const n = new Date(y, m, 0).getDate()
   return Array.from({ length: n }, (_, i) => dayRow(by, `${mk}-${String(i + 1).padStart(2, '0')}`))
 }
 
 /** Seven days seg → dom starting at `start` (a Monday). */
-export const weekDays = (tx: { date: string; amount: number }[], start: string): Day[] => {
+export const weekDays = (tx: Dated[], start: string): Day[] => {
   const by = byDate(tx)
   return Array.from({ length: 7 }, (_, i) => dayRow(by, addDays(start, i)))
 }
@@ -258,7 +316,7 @@ export function subState(s: Subscription, tx: Transaction[]) {
     : inDays < -3 ? 'missing' : inDays < 0 ? 'late' : inDays <= s.remind_days ? 'soon' : 'later'
   const priceChanged = last && Math.abs(last.amount - s.amount) >= 0.005 ? last.amount : null
   const year = today().slice(0, 4)
-  const yearTotal = cents(charges.filter((t) => t.date.startsWith(year)).reduce((x, t) => x + t.amount, 0))
+  const yearTotal = cents(charges.filter((t) => t.date.startsWith(year)).reduce((x, t) => x + spendOf(t), 0))
   return { charges, last, inDays, flag, priceChanged, yearTotal, attention: flag === 'missing' || flag === 'late' || priceChanged !== null }
 }
 

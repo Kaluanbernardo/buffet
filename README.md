@@ -33,7 +33,7 @@ scripts/buffet expense 97,13 --merchant Bar --category Lazer [--date ontem] [--b
 scripts/buffet list                      # mês atual; --date 29/10 ou --month 2026-10
 scripts/buffet del <id>                  # desfaz um lançamento errado
 scripts/buffet import-jsonl data/expenses.jsonl   # idempotente pelo id
-scripts/buffet sql "select category, sum(amount) from buffet_transactions group by 1"
+scripts/buffet sql "select category, sum(effective_amount) from buffet_transactions group by 1"
 ```
 Quando o Kaluan disser no chat "gastei 32 no mercado no Nubank", o assistente roda `buffet expense 32 --merchant Mercado
 --category Alimentação --bank Nubank` e confirma com o id/total de `buffet list`.
@@ -64,6 +64,25 @@ scripts/buffet bill set 100 --card Nubank            # valor informado pelo banc
 scripts/buffet pay-bill 100 --card Nubank --from Nubank   # marca a fatura paga + installments_paid dos planos
 scripts/buffet card set Nubank --closing 4 --due 11 · plans · del-plan <id> [--from AAAA-MM]
 ```
+**Gasto dividido e reembolso** (`research/split-reimburse-proposal.md`). O lançamento guarda sempre o valor cheio. Em toda
+soma de gasto entra `effective_amount` (`amount − reimbursed_amount`, gerada no banco; no app, `spendOf`), então o gasto conta
+inteiro até o dinheiro voltar e depois só a sua parte. Fatura e preço de assinatura continuam com `amount`, porque o banco cobra
+tudo. Reembolso não é renda e reduz o mês do gasto, não o mês em que chegou. "Gastei 1.000 de aluguel no PIX, dividido"; "recebi
+o aluguel"; "quanto tenho a receber?" →
+```bash
+scripts/buffet expense 1000 --merchant "Aluguel exemplo" --category Moradia --pix --split [--share 50]
+scripts/buffet split aluguel [--share 60]     # marca ou ajusta a SUA parte, em %; não mexe no caixa
+scripts/buffet unsplit aluguel                # só sem reembolso registrado
+scripts/buffet reimburse aluguel [--amount 300] [--date d] [--no-cash]   # padrão: tudo o que falta; soma ao cash_balance
+scripts/buffet unreimburse aluguel            # zera o reembolso e tira do cash_balance só o que tinha entrado
+scripts/buffet receivable                     # lista e total a receber
+```
+`<gasto>` = id, começo do id ou trecho do merchant; busca ambígua aborta e lista as opções. CLI e PWA (menu "…" em Gastos e
+"A receber" em Hoje) usam as mesmas funções SQL, `public.buffet_tx_split|unsplit|reimburse|unreimburse`: security invoker, valem
+RLS e grants, e gasto e saldo mudam na mesma transação. Parcela de plano não pode ser dividida, e linha com reembolso não pode ser
+apagada (o banco recusa; desfaça o reembolso antes). No calendário, a célula do dia mostra o valor cheio com um ponto, e o total
+do mês mostra o efetivo.
+
 No PWA, linhas com data futura ficam fora de Hoje e dos totais de Gastos (aparecem como "Agendadas" no mês);
 Dívidas tem as abas Faturas | Parcelas | Assinaturas. Token:
 `$SUPABASE_ACCESS_TOKEN` ou `/home/box/.secrets/supabase_access_token` (nunca impresso). `BUFFET_ROLLBACK=1` testa sem gravar.

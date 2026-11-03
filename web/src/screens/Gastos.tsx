@@ -3,11 +3,12 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeftRight, CalendarDays, MoreHorizontal, Plus, Repeat, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { CardPayment, Transaction } from '../data/types'
-import { categoryShare, isPosted, monthDays, monthSummary, posted, weekDays } from '../data/derive'
+import { categoryShare, isPosted, monthDays, monthSummary, posted, spendOf, weekDays } from '../data/derive'
 import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
 import { catColor, CategoryIcon, Columns, Empty, PeriodSwitcher, ScreenHeader, Segmented, Sheet } from '../components/ui'
 import { DailyBars, Donut, WeekBars } from '../components/charts'
 import { useActions } from '../components/Actions'
+import { SplitActions, SplitLine } from '../components/Split'
 
 /** Day totals in the strip: "86", "1,2 mil" — the R$ is implied. */
 const num = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 })
@@ -59,7 +60,7 @@ export default function Gastos() {
   const matches = (x: Transaction) => (!cat || x.category === cat) && (!needle || norm(x.merchant).includes(needle) || norm(x.note ?? '').includes(needle))
   const shown = scope.filter(matches)
   const list = (view === 'dia' ? shown.filter((x) => x.date === day) : shown).sort((a, b) => b.date.localeCompare(a.date))
-  const total = list.reduce((s, x) => s + x.amount, 0)
+  const total = list.reduce((s, x) => s + spendOf(x), 0)
   const scheduled = view === 'mes' ? data.transactions.filter((x) => !isPosted(x, t) && monthKey(x.date) === mk && matches(x)).sort((a, b) => a.date.localeCompare(b.date)) : []
   const filtered = Boolean(cat || needle)
   // Card bill payments sit in the timeline, muted and outside every total (they aren't spending). No category → hidden under a chip.
@@ -81,7 +82,7 @@ export default function Gastos() {
   // "Tudo": the newest `months` months with rows, a month heading above each; the rest loads on scroll.
   const dayMonths = [...new Set([...days.keys()].map(monthKey))]
   const visibleDays = view === 'tudo' ? [...days].filter(([date]) => dayMonths.indexOf(monthKey(date)) < months) : [...days]
-  const monthTotal = (m: string) => list.reduce((s, x) => s + (monthKey(x.date) === m ? x.amount : 0), 0)
+  const monthTotal = (m: string) => list.reduce((s, x) => s + (monthKey(x.date) === m ? spendOf(x) : 0), 0)
   const more = view === 'tudo' && dayMonths.length > months
   const monthLabel = (
     <button type="button" onClick={() => setPicker(true)} aria-haspopup="dialog" aria-label={`${monthName(mk)} — escolher mês ou ano`}
@@ -144,7 +145,7 @@ export default function Gastos() {
         </div>
       )}
 
-      {mode === 'cal' && <MonthCalendar key={mk} mk={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
+      {mode === 'cal' && <MonthCalendar key={mk} mk={mk} tx={inMonth.filter(matches)} value={day} onChange={setDay} />}
       {view === 'tudo' && <HistoryPanel tx={shown} first={first} onPick={(m) => { goMonth(m); setView('mes') }} />}
       {mode === 'lista' && view === 'dia' && <DayStrip key={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
       {view === 'semana' && <WeekPanel key={wk} start={wk} tx={done.filter(matches)} />}
@@ -173,7 +174,7 @@ export default function Gastos() {
               )}
               <div className="mb-2 flex items-baseline justify-between px-1 text-[13px]">
                 <h3 className="font-bold text-muted first-letter:uppercase">{dayLabel(date)}</h3>
-                {items.some((r) => 'tx' in r) && <span className="money text-faint">{money(items.reduce((s, r) => s + ('tx' in r ? r.tx.amount : 0), 0))}</span>}
+                {items.some((r) => 'tx' in r) && <span className="money text-faint">{money(items.reduce((s, r) => s + ('tx' in r ? spendOf(r.tx) : 0), 0))}</span>}
               </div>
               <ul className="card divide-y divide-rule">
                 {items.map((r) => {
@@ -188,6 +189,7 @@ export default function Gastos() {
                           {t.subscription_id && <Repeat size={13} strokeWidth={2.25} className="flex-none text-muted" aria-label={`Assinatura${subName(t.subscription_id) ? ` ${subName(t.subscription_id)}` : ''}`} />}
                         </p>
                         <p className="truncate text-[13px] text-faint">{t.category}{t.bank ? ` · ${t.bank}` : ''}{t.note ? ` · ${t.note}` : ''}</p>
+                        <SplitLine t={t} />
                       </div>
                       <span className="money flex-none font-semibold">{money(t.amount)}</span>
                       <button aria-label={`Ações de ${t.merchant}`} onClick={() => setMenu(t)}
@@ -205,7 +207,7 @@ export default function Gastos() {
             <section aria-labelledby="scheduled-h">
               <div className="mb-2 flex items-baseline justify-between px-1 text-[13px]">
                 <h2 id="scheduled-h" className="font-bold text-muted">Agendadas</h2>
-                <span className="money text-faint">{money(scheduled.reduce((s, x) => s + x.amount, 0))} · fora do total</span>
+                <span className="money text-faint">{money(scheduled.reduce((s, x) => s + spendOf(x), 0))} · fora do total</span>
               </div>
               <ul className="card divide-y divide-rule">
                 {scheduled.map((x) => (
@@ -233,9 +235,9 @@ export default function Gastos() {
 
       <Sheet open={menu !== null} onClose={() => setMenu(null)} title={menu?.merchant ?? ''}>
         {menu && (
-          <div className="grid gap-2">
+          <SplitActions tx={menu} onClose={() => setMenu(null)} summary={
             <p className="money mb-2 text-sm text-muted">{money(menu.amount)} · {dayLabel(menu.date)} · {menu.category}
-              {menu.subscription_id && <> · ↻ {subName(menu.subscription_id) ?? 'assinatura'}</>}</p>
+              {menu.subscription_id && <> · ↻ {subName(menu.subscription_id) ?? 'assinatura'}</>}</p>}>
             {data.subscriptionsReady !== false && (menu.subscription_id ? (
               <>
                 <button className="btn-ghost h-11 justify-start px-4" onClick={() => { setMenu(null); navigate('/dividas?tab=assinaturas') }}><Repeat size={16} />Ver assinatura</button>
@@ -247,8 +249,11 @@ export default function Gastos() {
                 <Repeat size={16} />Acompanhar como assinatura
               </button>
             ))}
-            <button className="btn-ghost h-11 justify-start px-4 text-negative" onClick={() => { remove(menu); setMenu(null) }}><Trash2 size={16} />Excluir gasto</button>
-          </div>
+            {/* Deleting would leave the received money in the balance with no row behind it. */}
+            {menu.reimbursed_amount == null
+              ? <button className="btn-ghost h-11 justify-start px-4 text-negative" onClick={() => { remove(menu); setMenu(null) }}><Trash2 size={16} />Excluir gasto</button>
+              : <p className="px-1 pt-1 text-[13px] text-faint">Para excluir, desfaça o reembolso antes.</p>}
+          </SplitActions>
         )}
       </Sheet>
     </div>
@@ -352,14 +357,17 @@ function MonthPanel({ mk, tx, onPick }: { mk: string; tx: Transaction[]; onPick:
 const WEEKDAYS = ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom']
 
 /**
- * Calendário: the month as a seg → dom grid. Each day shows its total; the tint deepens with the spend
- * (relative to the month's biggest day), so heavy days read at a glance. Tap a day → its list.
+ * Calendário: the month as a seg → dom grid. Each day shows what left that day at full value, with a dot when a split
+ * spend is in it; the total on top is the spend (your part once reimbursed), so with a reimbursed row the cells add up
+ * to more than it. The tint deepens with the amount (relative to the month's biggest day). Tap a day → its list.
  */
-function MonthCalendar({ mk, days, value, onChange }: { mk: string; days: { date: string; day: number; total: number }[]; value: string; onChange: (d: string) => void }) {
+function MonthCalendar({ mk, tx, value, onChange }: { mk: string; tx: Transaction[]; value: string; onChange: (d: string) => void }) {
   const t = today()
   const lead = (parseISO(`${mk}-01`).getDay() + 6) % 7
+  const days = monthDays(tx, mk, (x) => x.amount)
   const max = Math.max(0, ...days.map((d) => d.total))
-  const total = days.reduce((s, d) => s + d.total, 0)
+  const total = tx.reduce((s, x) => s + spendOf(x), 0)
+  const splitDays = new Set(tx.filter((x) => x.split_share_pct != null).map((x) => x.date))
   return (
     <section className="card mb-5 p-3 sm:p-4" aria-label={`Calendário de ${monthName(mk).toLowerCase()}`}>
       <div className="mb-3 flex items-baseline justify-between px-1">
@@ -377,9 +385,10 @@ function MonthCalendar({ mk, days, value, onChange }: { mk: string; days: { date
           const heat = !on && d.total > 0 && max > 0 ? Math.round(6 + (d.total / max) * 22) : 0
           return (
             <button key={d.date} type="button" role="radio" aria-checked={on} disabled={future} onClick={() => onChange(d.date)}
-              aria-label={`${dayLabel(d.date)}: ${d.total > 0 ? money(d.total) : 'sem gastos'}`}
+              aria-label={`${dayLabel(d.date)}: ${d.total > 0 ? money(d.total) : 'sem gastos'}${splitDays.has(d.date) ? ', inclui gasto dividido' : ''}`}
               style={heat ? { background: `color-mix(in srgb, var(--color-ink) ${heat}%, var(--color-surface))` } : undefined}
-              className={`flex aspect-square min-h-11 flex-col items-center justify-center gap-0.5 rounded-xl border transition-colors disabled:opacity-35 sm:aspect-[5/4] ${on ? 'border-ink bg-ink text-ground' : d.date === t ? 'border-accent' : 'border-transparent hover:border-control'}`}>
+              className={`relative flex aspect-square min-h-11 flex-col items-center justify-center gap-0.5 rounded-xl border transition-colors disabled:opacity-35 sm:aspect-[5/4] ${on ? 'border-ink bg-ink text-ground' : d.date === t ? 'border-accent' : 'border-transparent hover:border-control'}`}>
+              {splitDays.has(d.date) && <span aria-hidden className={`absolute top-1 right-1 size-1.5 rounded-full ${on ? 'bg-ground' : 'bg-accent'}`} />}
               <span className={`text-[15px] leading-none font-bold ${d.date === t && !on ? 'text-accent' : ''}`}>{d.day}</span>
               <span aria-hidden className={`money h-3 text-[10px] leading-none font-semibold ${on ? '' : d.total > 0 ? 'text-ink' : 'text-faint'}`}>
                 {future || d.total === 0 ? '' : valuesHidden() ? '••' : num.format(d.total < 1000 ? Math.round(d.total) : d.total)}
@@ -388,6 +397,11 @@ function MonthCalendar({ mk, days, value, onChange }: { mk: string; days: { date
           )
         })}
       </div>
+      {splitDays.size > 0 && (
+        <p className="mt-3 flex items-center gap-2 px-1 text-xs text-faint">
+          <span aria-hidden className="size-1.5 flex-none rounded-full bg-accent" />Tem gasto dividido: o dia mostra o valor cheio.
+        </p>
+      )}
     </section>
   )
 }
@@ -395,7 +409,7 @@ function MonthCalendar({ mk, days, value, onChange }: { mk: string; days: { date
 /** Tudo: one row per month (newest first) with its total against the biggest month; tap jumps to that month. */
 function HistoryPanel({ tx, first, onPick }: { tx: Transaction[]; first: string; onPick: (mk: string) => void }) {
   const by = new Map<string, number>()
-  for (const x of tx) by.set(monthKey(x.date), (by.get(monthKey(x.date)) ?? 0) + x.amount)
+  for (const x of tx) by.set(monthKey(x.date), (by.get(monthKey(x.date)) ?? 0) + spendOf(x))
   const rows = [...by].sort((a, b) => b[0].localeCompare(a[0]))
   if (rows.length === 0) return null
   const max = Math.max(...rows.map(([, v]) => v))
@@ -433,7 +447,7 @@ function MonthPicker({ value, first, last, tx, onPick, onAll }: {
   const [y0, y1] = [Number(first.slice(0, 4)), Number(last.slice(0, 4))]
   const [year, setYear] = useState(Number(value.slice(0, 4)))
   const totals = new Map<string, number>()
-  for (const x of tx) totals.set(monthKey(x.date), (totals.get(monthKey(x.date)) ?? 0) + x.amount)
+  for (const x of tx) totals.set(monthKey(x.date), (totals.get(monthKey(x.date)) ?? 0) + spendOf(x))
   const years = Array.from({ length: y1 - y0 + 1 }, (_, i) => y1 - i)
   return (
     <div className="grid gap-4">

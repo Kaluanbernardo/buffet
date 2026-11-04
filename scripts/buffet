@@ -73,7 +73,7 @@ from zoneinfo import ZoneInfo
 REF = os.environ.get("SUPABASE_PROJECT_REF", "qlphmxjehsexuxspspaw")
 TOKEN_FILE = "/home/box/.secrets/supabase_access_token"
 TZ = ZoneInfo("America/Sao_Paulo")
-CATEGORIES = ("Alimentação", "Transporte", "Moradia", "Saúde", "Lazer", "Assinaturas", "Educação", "Vestimenta", "Mercado", "Doação", "Fitness", "Jogos", "Pró-vida", "Telefonia e internet", "Pet", "Outros")
+CATEGORIES = ("Alimentação", "Transporte", "Moradia", "Saúde", "Lazer", "Assinaturas", "Educação", "Vestimenta", "Mercado", "Doação", "Fitness", "Jogos", "Pró-vida", "Telefonia e internet", "Pet", "Impostos", "Outros")
 BANKS = ("Nubank", "Neon", "Inter", "XP")
 
 

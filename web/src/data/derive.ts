@@ -1,4 +1,4 @@
-import type { Bank, Budget, BudgetGroup, BuffetData, CardPayment, Debt, SplitAction, SubCycle, Subscription, Transaction } from './types'
+import type { Bank, Budget, BudgetGroup, BuffetData, CardPayment, Debt, PayMethod, SplitAction, SubCycle, Subscription, Transaction } from './types'
 import { addDays, monthClock, monthKey, parseISO, shiftMonth, today } from '../lib/format'
 
 const cents = (v: number) => Math.round(v * 100) / 100
@@ -209,20 +209,69 @@ export function daysUntilDue(dueDay: number) {
 export const dueLabel = (n: number) => (n === 0 ? 'Vence hoje' : n === 1 ? 'Vence amanhã' : `Em ${n} dias`)
 
 export type Slice = { key: string; value: number; share: number }
-/** Spend by category, largest first; past `k` slices the tail folds into "Outras" (never a generated colour). */
-export function categoryShare(tx: (Spendable & { category: string })[], k = 4): Slice[] {
+/** Spend by category, largest first (ties by name). Every category with spend gets its own slice — nothing folds into a tail bucket. */
+export function categoryShare(tx: (Spendable & { category: string })[]): Slice[] {
   const by = new Map<string, number>()
   for (const t of tx) by.set(t.category, cents((by.get(t.category) ?? 0) + spendOf(t)))
-  const total = [...by.values()].reduce((s, v) => s + v, 0)
-  if (total <= 0) return []
-  const sorted = [...by].sort((a, b) => b[1] - a[1])
-  const head = sorted.length > k + 1 ? sorted.slice(0, k) : sorted
-  const rest = sorted.slice(head.length).reduce((s, [, v]) => s + v, 0)
-  const out = head.map(([key, value]) => ({ key, value, share: value / total }))
-  if (rest > 0) out.push({ key: OTHER_SLICE, value: cents(rest), share: rest / total })
-  return out
+  const sorted = [...by].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const total = cents(sorted.reduce((s, [, v]) => s + v, 0))
+  return sorted.map(([key, value]) => ({ key, value, share: value / total }))
 }
-export const OTHER_SLICE = 'Outras'
+
+// ---------------------------------------------------------------- filtro de pagamento e série por categoria
+
+export type PayFilter = 'todos' | PayMethod
+export const PAY_FILTERS: { key: PayFilter; label: string }[] = [
+  { key: 'todos', label: 'Todos' }, { key: 'credit', label: 'Crédito' }, { key: 'debit', label: 'Débito' }, { key: 'pix', label: 'PIX' },
+]
+/** "Todos" keeps everything (method unknown or cash included); a specific method keeps exactly that method, so an unknown one is never read as debit or PIX. */
+export const payMatches = (t: { method?: PayMethod }, f: PayFilter) => f === 'todos' || t.method === f
+
+/**
+ * The spend Gastos works on: rows already spent (isPosted — later installments stay out) in the chosen payment method.
+ * Card bill payments live in data.cardPayments, not here, and a plan's principal is no row at all: only its installments.
+ */
+export const spendScope = (data: BuffetData, pay: PayFilter = 'todos', ref = today()) =>
+  data.transactions.filter((t) => isPosted(t, ref) && payMatches(t, pay))
+
+export type FlowMode = 'area' | 'stream'
+/** Spend per category per point on the time axis (day or month); `values[c][i]` pairs with `cats[c]` and `keys[i]`. */
+export interface Flow { keys: string[]; cats: string[]; values: number[][]; totals: number[] }
+/**
+ * Category × time matrix of what rows weigh in spend (spendOf). `keys` are the points in order; a row whose `keyOf` is not
+ * among them is outside the window. Categories are the ones with spend in the window, largest first (ties by name).
+ */
+export function categoryFlow(tx: (Spendable & { category: string; date: string })[], keys: string[], keyOf: (date: string) => string): Flow {
+  const at = new Map(keys.map((k, i) => [k, i]))
+  const by = new Map<string, number[]>()
+  for (const t of tx) {
+    const i = at.get(keyOf(t.date))
+    if (i === undefined) continue
+    const row = by.get(t.category) ?? keys.map(() => 0)
+    row[i] = cents(row[i] + spendOf(t))
+    by.set(t.category, row)
+  }
+  const sum = (xs: number[]) => cents(xs.reduce((s, v) => s + v, 0))
+  const rows = [...by].filter(([, v]) => sum(v) > 0).sort((a, b) => sum(b[1]) - sum(a[1]) || a[0].localeCompare(b[0]))
+  const values = rows.map(([, v]) => v)
+  return { keys, cats: rows.map(([c]) => c), values, totals: keys.map((_, i) => cents(values.reduce((s, v) => s + v[i], 0))) }
+}
+
+export interface Band { cat: string; lo: number[]; hi: number[] }
+/**
+ * Layers stacked per point. 'area': the first layer sits on a zero baseline. 'stream': the baseline of each point is minus
+ * half of that point's total, so the whole stack is centred on zero. Layer order = `flow.cats`.
+ */
+export function flowBands(flow: Flow, mode: FlowMode): { bands: Band[]; base: number[]; min: number; max: number } {
+  const base = flow.totals.map((t) => (mode === 'stream' ? -t / 2 : 0))
+  const top = [...base]
+  const bands = flow.cats.map((cat, c) => {
+    const lo = [...top]
+    flow.values[c].forEach((v, i) => { top[i] += v })
+    return { cat, lo, hi: [...top] }
+  })
+  return { bands, base, min: Math.min(0, ...base), max: Math.max(0, ...top) }
+}
 
 type Day = { date: string; day: number; total: number }
 type Dated = Spendable & { date: string }

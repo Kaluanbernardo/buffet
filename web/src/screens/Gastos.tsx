@@ -3,10 +3,10 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeftRight, CalendarDays, MoreHorizontal, Plus, Repeat, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { CardPayment, Transaction } from '../data/types'
-import { categoryShare, isPosted, monthDays, monthSummary, posted, spendOf, weekDays } from '../data/derive'
+import { categoryFlow, categoryShare, isPosted, monthDays, monthSummary, PAY_FILTERS, payMatches, posted, spendOf, spendScope, weekDays, type FlowMode, type PayFilter } from '../data/derive'
 import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
 import { catColor, CategoryIcon, Columns, Empty, PeriodSwitcher, ScreenHeader, Segmented, Sheet } from '../components/ui'
-import { DailyBars, Donut, WeekBars } from '../components/charts'
+import { CategoryFlow, DailyBars, Donut, WeekBars } from '../components/charts'
 import { useActions } from '../components/Actions'
 import { SplitActions, SplitLine } from '../components/Split'
 
@@ -17,6 +17,7 @@ type View = 'dia' | 'semana' | 'mes' | 'tudo'
 const VIEWS: { key: View; label: string }[] = [{ key: 'dia', label: 'Dia' }, { key: 'semana', label: 'Semana' }, { key: 'mes', label: 'Mês' }, { key: 'tudo', label: 'Tudo' }]
 type Mode = 'lista' | 'cal'
 const MODES: { key: Mode; label: string }[] = [{ key: 'lista', label: 'Lista' }, { key: 'cal', label: 'Calendário' }]
+const FLOW_MODES: { key: FlowMode; label: string }[] = [{ key: 'area', label: 'Área empilhada' }, { key: 'stream', label: 'Streamgraph' }]
 /** "Tudo" renders this many months at a time; scrolling to the end loads the next batch. */
 const MONTH_BATCH = 3
 
@@ -32,6 +33,9 @@ export default function Gastos() {
   const setCat = (c: string | null) => setParams((p) => { if (c) p.set('cat', c); else p.delete('cat'); return p }, { replace: true })
   const listView: View = (['dia', 'semana', 'mes', 'tudo'] as const).find((v) => v === params.get('v')) ?? 'mes'
   const setView = (v: View) => setParams((p) => { p.set('v', v); p.delete('m'); return p }, { replace: true })
+  const pay: PayFilter = PAY_FILTERS.find((f) => f.key === params.get('pay'))?.key ?? 'todos'
+  const setPay = (f: PayFilter) => setParams((p) => { if (f !== 'todos') p.set('pay', f); else p.delete('pay'); return p }, { replace: true })
+  const [flowMode, setFlowMode] = useState<FlowMode>('area')
   const mode: Mode = params.get('m') === 'cal' ? 'cal' : 'lista'
   const setMode = (m: Mode) => setParams((p) => { if (m === 'cal') p.set('m', 'cal'); else p.delete('m'); return p }, { replace: true })
   // The calendar is a month of days: underneath it behaves as "Dia" (the list shows the tapped day).
@@ -49,7 +53,8 @@ export default function Gastos() {
 
   // Period first (the chosen day, week or month), then category and search on top of it. Only rows dated up to today:
   // future installments (one row per month) are listed apart as "Agendadas", outside every total.
-  const done = data.transactions.filter((x) => isPosted(x, t))
+  // The payment filter sits at the root, so list, calendar, day strip, charts and history all read the same rows.
+  const done = spendScope(data, pay, t)
   const inMonth = done.filter((x) => monthKey(x.date) === mk)
   const wkEnd = addDays(wk, 6)
   const inWeek = done.filter((x) => x.date >= wk && x.date <= wkEnd)
@@ -61,11 +66,12 @@ export default function Gastos() {
   const shown = scope.filter(matches)
   const list = (view === 'dia' ? shown.filter((x) => x.date === day) : shown).sort((a, b) => b.date.localeCompare(a.date))
   const total = list.reduce((s, x) => s + spendOf(x), 0)
-  const scheduled = view === 'mes' ? data.transactions.filter((x) => !isPosted(x, t) && monthKey(x.date) === mk && matches(x)).sort((a, b) => a.date.localeCompare(b.date)) : []
-  const filtered = Boolean(cat || needle)
+  const scheduled = view === 'mes' ? data.transactions.filter((x) => !isPosted(x, t) && payMatches(x, pay) && monthKey(x.date) === mk && matches(x)).sort((a, b) => a.date.localeCompare(b.date)) : []
+  const filtered = Boolean(cat || needle || pay !== 'todos')
   // Card bill payments sit in the timeline, muted and outside every total (they aren't spending). No category → hidden under a chip.
   const inPeriod = (x: { date: string }) => (view === 'tudo' ? true : view === 'dia' ? x.date === day : view === 'semana' ? x.date >= wk && x.date <= wkEnd : monthKey(x.date) === mk)
-  const bills = cat ? [] : data.cardPayments.filter((b) => inPeriod(b) && (!needle || norm(`fatura ${b.card_bank} ${b.note ?? ''}`).includes(needle)))
+  // They carry no payment method, so a specific method leaves them out like any other row without one.
+  const bills = cat || pay !== 'todos' ? [] : data.cardPayments.filter((b) => inPeriod(b) && (!needle || norm(`fatura ${b.card_bank} ${b.note ?? ''}`).includes(needle)))
 
   const firstWeek = weekStart(`${first}-01`)
   const pickMonth = (n: number) => goMonth(shiftMonth(mk, n))
@@ -133,6 +139,8 @@ export default function Gastos() {
         )}
       </div>
 
+      <div className="mb-3"><Segmented value={pay} options={PAY_FILTERS} onChange={setPay} label="Filtrar por forma de pagamento" /></div>
+
       {usedCats.length > 0 && (
         <div className="-mx-4 mb-5 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0" role="group" aria-label="Filtrar por categoria">
           {[null, ...usedCats].map((c) => (
@@ -150,11 +158,12 @@ export default function Gastos() {
       {mode === 'lista' && view === 'dia' && <DayStrip key={mk} days={monthDays(inMonth.filter(matches), mk)} value={day} onChange={setDay} />}
       {view === 'semana' && <WeekPanel key={wk} start={wk} tx={done.filter(matches)} />}
       {view === 'mes' && <MonthPanel key={mk} mk={mk} tx={shown} onPick={(c) => setCat(c === cat ? null : c)} />}
+      <FlowPanel tx={shown} view={view} mk={mk} wk={wk} mode={flowMode} onMode={setFlowMode} onPick={(c) => setCat(c === cat ? null : c)} />
       </>} side={<>
 
       {list.length === 0 && bills.length === 0 && scheduled.length === 0 ? (
         filtered ? (
-          <Empty action={<button className="link" onClick={() => { setQ(''); setCat(null) }}>Limpar filtros</button>}>
+          <Empty action={<button className="link" onClick={() => { setQ(''); setCat(null); setPay('todos') }}>Limpar filtros</button>}>
             Nada encontrado {view === 'mes' ? 'em ' : ''}{periodName} com esses filtros.
           </Empty>
         ) : (
@@ -350,6 +359,32 @@ function MonthPanel({ mk, tx, onPick }: { mk: string; tx: Transaction[]; onPick:
         <DailyBars days={days} allowance={m.limit > 0 ? m.limit / m.clock.days : undefined}
           from={`1º de ${m.clock.name}`} to={`dia ${m.clock.days}`} label={`Gastos por dia em ${name}`} />
       </div>
+    </section>
+  )
+}
+
+/**
+ * Categorias ao longo do tempo, na mesma seleção da lista: os 7 dias da semana, os dias do mês (Dia, Mês e Calendário) ou
+ * um ponto por mês no histórico. Área empilhada tem eixo em reais; streamgraph só mostra a forma, o valor vem no toque.
+ */
+function FlowPanel({ tx, view, mk, wk, mode, onMode, onPick }: {
+  tx: Transaction[]; view: View; mk: string; wk: string; mode: FlowMode; onMode: (m: FlowMode) => void; onPick: (c: string) => void
+}) {
+  const monthly = view === 'tudo'
+  const keys = monthly ? [...new Set(tx.map((x) => monthKey(x.date)))].sort()
+    : view === 'semana' ? Array.from({ length: 7 }, (_, i) => addDays(wk, i)) : monthDays([], mk).map((d) => d.date)
+  const flow = categoryFlow(tx, keys, monthly ? monthKey : (d) => d)
+  const slices = categoryShare(tx.filter((x) => keys.includes(monthly ? monthKey(x.date) : x.date)))
+  if (flow.cats.length === 0) return null
+  const labels = keys.map((k) => (monthly ? monthName(k) : dayLabel(k)))
+  const name = monthly ? 'no histórico' : view === 'semana' ? `na semana ${weekRange(wk)}` : `em ${monthName(mk).toLowerCase()}`
+  const from = monthly ? labels[0] : view === 'semana' ? labels[0] : `1º de ${monthName(mk).split(' ')[0].toLowerCase()}`
+  const to = monthly ? labels[labels.length - 1] : view === 'semana' ? labels[6] : `dia ${keys.length}`
+  return (
+    <section className="card mb-5 p-4" aria-label="Categorias ao longo do tempo">
+      <div className="mb-3"><Segmented value={mode} options={FLOW_MODES} onChange={onMode} label="Tipo de gráfico de categorias" /></div>
+      <CategoryFlow key={`${view}-${mk}-${wk}-${mode}-${keys.length}-${flow.cats.join()}`} flow={flow} mode={mode} labels={labels} slices={slices} from={from} to={to}
+        label={`Gastos por categoria ${name}, ${mode === 'area' ? 'área empilhada' : 'streamgraph'}`} onPick={onPick} />
     </section>
   )
 }

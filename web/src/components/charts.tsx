@@ -1,10 +1,10 @@
 import { useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { OTHER_SLICE, type Slice } from '../data/derive'
+import { flowBands, type Flow, type FlowMode, type Slice } from '../data/derive'
 import { dayLabel, money, moneyCompact, today } from '../lib/format'
-import { catColor, NEUTRAL_MARK } from './ui'
+import { catColor } from './ui'
 
 const pct = (share: number) => `${Math.round(share * 100)}%`
-const sliceColor = (key: string) => (key === OTHER_SLICE ? NEUTRAL_MARK : catColor(key))
+const sliceColor = catColor
 
 /**
  * 100% stacked share bar + legend. Segments are separated by a 2px surface gap; the legend carries name,
@@ -29,7 +29,7 @@ export function ShareBar({ slices, label, onPick }: { slices: Slice[]; label: st
 }
 
 /** Name · value · share rows shared by the share bar and the donut; rows are buttons when `onPick` is set. */
-function Legend({ slices, hot, setHot, onPick, className = '' }: {
+export function Legend({ slices, hot, setHot, onPick, className = '' }: {
   slices: Slice[]; hot: string | null; setHot: (k: string | null) => void; onPick?: (key: string) => void; className?: string
 }) {
   return (
@@ -44,7 +44,7 @@ function Legend({ slices, hot, setHot, onPick, className = '' }: {
         const cls = `flex w-full items-center gap-2.5 rounded-lg px-1 py-1.5 text-sm transition-colors ${hot === s.key ? 'bg-raised' : ''}`
         return (
           <li key={s.key} onPointerEnter={() => setHot(s.key)} onPointerLeave={() => setHot(null)}>
-            {onPick && s.key !== OTHER_SLICE
+            {onPick
               ? <button type="button" className={cls} onClick={() => onPick(s.key)} onFocus={() => setHot(s.key)} onBlur={() => setHot(null)}>{body}</button>
               : <div className={cls}>{body}</div>}
           </li>
@@ -258,6 +258,89 @@ export function Ring({ value, total, size = 52, label }: { value: number; total:
         )}
       </svg>
       <span aria-hidden className="money absolute text-[12px] font-bold">{value}/{total}</span>
+    </div>
+  )
+}
+
+/**
+ * Spend by category over time, one band per category in the same colours as the legend. 'area' is stacked on a zero
+ * baseline with a monetary Y axis; 'stream' centres the bands around the middle line and has no value axis at all —
+ * only the tooltip reads amounts. Pointer / arrows pick a point; hovering a band or legend row isolates its category.
+ */
+export function CategoryFlow({ flow, mode, labels, slices, from, to, label, onPick }: {
+  flow: Flow; mode: FlowMode; labels: string[]; slices: Slice[]; from: string; to: string; label: string; onPick?: (key: string) => void
+}) {
+  const n = flow.keys.length
+  // Same anchor as the other charts: today when it is in the window, otherwise the last point.
+  // A future empty day must not be the default readout.
+  const rest = (() => {
+    const t = today()
+    const at = flow.keys.findIndex((k) => k === t || k === t.slice(0, 7))
+    return at >= 0 ? at : Math.max(0, n - 1)
+  })()
+  const [sel, setSel] = useState(rest)
+  const [hot, setHot] = useState<string | null>(null)
+  const W = 300, H = 120
+  const { bands, min, max } = flowBands(flow, mode)
+  const i = Math.min(sel, n - 1)
+  const span = max - min || 1
+  const y = (v: number) => H - ((v - min) / span) * H
+  // One point still has to be a visible band: draw it as a short plateau.
+  const pts = n === 1 ? [{ k: 0, px: W * 0.2 }, { k: 0, px: W * 0.8 }] : Array.from({ length: n }, (_, k) => ({ k, px: (k / (n - 1)) * W }))
+  const path = (b: { lo: number[]; hi: number[] }) =>
+    `M${pts.map((p) => `${p.px},${y(b.hi[p.k])}`).join('L')}L${[...pts].reverse().map((p) => `${p.px},${y(b.lo[p.k])}`).join('L')}Z`
+  const cursor = n === 1 ? W / 2 : (i / (n - 1)) * W
+  const ticks = mode === 'area' ? [0, 0.5, 1].map((f) => max * f) : []
+  const cur = bands.find((b) => b.cat === hot)
+  const readout = cur ? { name: cur.cat, value: flow.values[flow.cats.indexOf(cur.cat)][i] } : { name: 'Total', value: flow.totals[i] }
+
+  const pick = (e: PointerEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    setSel(Math.max(0, Math.min(n - 1, Math.round(((e.clientX - r.left) / r.width) * (n - 1)))))
+  }
+  const key = (e: KeyboardEvent) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); setSel(Math.max(0, i - 1)) }
+    if (e.key === 'ArrowRight') { e.preventDefault(); setSel(Math.min(n - 1, i + 1)) }
+  }
+
+  if (n === 0 || bands.length === 0) return <p className="py-6 text-center text-sm text-faint">Sem gastos para mostrar.</p>
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between gap-3 text-sm" aria-live="polite">
+        <span className="text-muted first-letter:uppercase">{labels[i]}</span>
+        <span className="money truncate text-right"><span className="text-faint">{readout.name} · </span><span className="font-semibold">{money(readout.value)}</span></span>
+      </div>
+      <div className="flex gap-2">
+        {mode === 'area' && (
+          <div aria-hidden className="relative h-[124px] w-11 flex-none text-right text-[10px] text-faint">
+            {ticks.map((t, k) => <span key={k} className="money absolute right-0 -translate-y-1/2 leading-none" style={{ top: `${(y(t) / H) * 100}%` }}>{t === 0 ? '0' : moneyCompact(t)}</span>)}
+          </div>
+        )}
+        <svg viewBox={`0 -2 ${W} ${H + 4}`} preserveAspectRatio="none" className="block h-[124px] min-w-0 flex-1 touch-pan-y outline-none"
+          tabIndex={0} role="img" aria-label={`${label}. Use as setas para navegar.`}
+          onPointerMove={pick} onPointerDown={pick} onPointerLeave={() => setSel(rest)} onKeyDown={key}>
+          {mode === 'area' && ticks.map((t, k) => (
+            <line key={k} x1={0} x2={W} y1={y(t)} y2={y(t)} stroke="var(--color-line)" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+          ))}
+          {bands.map((b) => (
+            <path key={b.cat} d={path(b)} fill={catColor(b.cat)} opacity={hot && hot !== b.cat ? 0.3 : 0.9}
+              onPointerEnter={() => setHot(b.cat)} onPointerLeave={() => setHot(null)} className="transition-opacity duration-150">
+              <title>{`${b.cat}: ${money(flow.values[flow.cats.indexOf(b.cat)][i])}`}</title>
+            </path>
+          ))}
+          <line x1={cursor} x2={cursor} y1={-2} y2={H + 2} stroke="var(--color-ink)" strokeOpacity={0.5} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        </svg>
+      </div>
+      <div className={`mt-2 flex justify-between text-xs text-faint ${mode === 'area' ? 'pl-[3.25rem]' : ''}`}>
+        <span className="first-letter:uppercase">{from}</span>
+        <span className="first-letter:uppercase">{to}</span>
+      </div>
+      <Legend slices={slices} hot={hot} setHot={setHot} onPick={onPick} className="mt-3.5" />
+      <table className="sr-only">
+        <caption>{label}</caption>
+        <thead><tr><th>Categoria</th>{labels.map((l, k) => <th key={flow.keys[k]}>{l}</th>)}</tr></thead>
+        <tbody>{flow.cats.map((c, ci) => <tr key={c}><th scope="row">{c}</th>{flow.values[ci].map((v, k) => <td key={flow.keys[k]}>{money(v)}</td>)}</tr>)}</tbody>
+      </table>
     </div>
   )
 }

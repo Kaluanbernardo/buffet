@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { categoryFlow, categoryShare, flowBands, owedOf, payMatches, spendOf, spendScope, type PayFilter } from '../src/data/derive'
+import { categoryShare, methodCategoryFlow, owedOf, PAY_ORIGIN_LABEL, payMatches, payOrigin, spendOf, spendScope, treemapRects, type PayFilter } from '../src/data/derive'
 import { CAT_COLORS, NEUTRAL_MARK, catColor } from '../src/lib/colors'
 import type { BuffetData, PayMethod, Transaction } from '../src/data/types'
 
@@ -12,7 +12,8 @@ const data = (transactions: Transaction[], cardPayments: BuffetData['cardPayment
   config: { categories: [], banks: [] },
 })
 const total = (rows: Transaction[]) => Math.round(rows.reduce((s, t) => s + spendOf(t), 0) * 100) / 100
-const days = ['2030-06-01', '2030-06-02', '2030-06-03']
+const cents = (v: number) => Math.round(v * 100) / 100
+const flowTotal = (rows: Transaction[]) => methodCategoryFlow(rows).total
 
 describe('categoryShare', () => {
   it('lists every category, keeps a real Outros row and emits no synthetic tail bucket', () => {
@@ -54,41 +55,147 @@ describe('category colors', () => {
   })
 })
 
-describe('category flow', () => {
+describe('methodCategoryFlow', () => {
   const rows = [
-    tx({ date: days[0], category: 'Mercado', amount: 30 }), tx({ date: days[1], category: 'Mercado', amount: 10 }),
-    tx({ date: days[1], category: 'Outros', amount: 20 }), tx({ date: days[2], category: 'Pet', amount: 40 }),
-    tx({ date: '2030-07-01', category: 'Jogos', amount: 99 }), // outside the window
+    tx({ method: 'credit', category: 'Mercado', amount: 30 }), tx({ method: 'credit', category: 'Pet', amount: 10 }),
+    tx({ method: 'debit', category: 'Mercado', amount: 20 }), tx({ method: 'pix', category: 'Pet', amount: 5.5 }),
+    tx({ method: 'cash', category: 'Outros', amount: 4.5 }), tx({ category: 'Lazer', amount: 12 }),
   ]
-  const flow = categoryFlow(rows, days, (d) => d)
+  const flow = methodCategoryFlow(rows)
 
-  it('includes every category in the window, Outros as its own row', () => {
-    expect([...flow.cats].sort()).toEqual(['Mercado', 'Outros', 'Pet'])
-    expect(flow.totals).toEqual([30, 30, 40])
+  it('conserves the total across links, origins, categories and categoryShare', () => {
+    const sum = (xs: { value: number }[]) => cents(xs.reduce((s, x) => s + x.value, 0))
+    expect(flow.total).toBe(82)
+    expect(sum(flow.links)).toBe(flow.total)
+    expect(sum(flow.origins)).toBe(flow.total)
+    expect(sum(flow.categories)).toBe(flow.total)
+    expect(sum(categoryShare(rows))).toBe(flow.total)
+    expect(flow.categories.map((c) => c.key)).toEqual(categoryShare(rows).map((s) => s.key))
   })
 
-  it('stacked area starts every point at 0', () => {
-    const { bands, base, min } = flowBands(flow, 'area')
-    expect(base).toEqual([0, 0, 0])
-    expect(bands[0].lo).toEqual([0, 0, 0])
-    expect(min).toBe(0)
-    expect(bands.map((b) => b.cat).sort()).toEqual(['Mercado', 'Outros', 'Pet'])
-    expect(bands[bands.length - 1].hi).toEqual(flow.totals)
+  it('orders origins crédito, débito, pix, dinheiro, não informada and drops empty ones', () => {
+    expect(flow.origins.map((o) => o.key)).toEqual(['credit', 'debit', 'pix', 'cash', 'unknown'])
+    expect(flow.origins.map((o) => o.label)).toEqual(['Crédito', 'Débito', 'PIX', 'Dinheiro', 'Forma não informada'])
+    const some = methodCategoryFlow([tx({ method: 'pix', amount: 1 }), tx({ method: 'credit', amount: 1 })])
+    expect(some.origins.map((o) => o.key)).toEqual(['credit', 'pix'])
   })
 
-  it('streamgraph is centred: baseline is minus half the day total', () => {
-    const { bands, base, min, max } = flowBands(flow, 'stream')
-    expect(base).toEqual([-15, -15, -20])
-    expect(bands[0].lo).toEqual(base)
-    expect(bands[bands.length - 1].hi).toEqual([15, 15, 20])
-    expect(min).toBe(-20)
-    expect(max).toBe(20)
-    expect(bands.map((b) => b.cat).sort()).toEqual(['Mercado', 'Outros', 'Pet'])
+  it('links each method to the category of the same row', () => {
+    const link = (source: string, category: string) => flow.links.find((l) => l.source === source && l.category === category)?.value
+    expect(link('credit', 'Mercado')).toBe(30)
+    expect(link('debit', 'Mercado')).toBe(20)
+    expect(link('pix', 'Pet')).toBe(5.5)
+    expect(link('credit', 'Pet')).toBe(10)
+    expect(link('debit', 'Pet')).toBeUndefined()
   })
 
-  it('can group by month', () => {
-    const f = categoryFlow(rows, ['2030-06', '2030-07'], (d) => d.slice(0, 7))
-    expect(f.totals).toEqual([100, 99])
+  it('weighs split rows by amount minus reimbursed: none, partial, full', () => {
+    const split = { split_share_pct: 60, partner_amount: 40, method: 'pix' as const }
+    const w = (r?: number) => methodCategoryFlow([tx({ amount: 100, ...split, ...(r === undefined ? {} : { reimbursed_amount: r }) })])
+    expect(w().links[0].value).toBe(100)
+    expect(w(15).links[0].value).toBe(85)
+    expect(w(40).links[0].value).toBe(60)
+    expect(w(40).total).toBe(60)
+  })
+
+  it('reads a missing method as "não informada", even with bank or bill_month set', () => {
+    expect(payOrigin({})).toBe('unknown')
+    expect(payOrigin({ method: 'cash' })).toBe('cash')
+    expect(PAY_ORIGIN_LABEL.unknown).toBe('Forma não informada')
+    const f = methodCategoryFlow([tx({ amount: 10 }), tx({ amount: 5, bank: 'Banco teste' }), tx({ amount: 7, bill_month: '2030-07' })])
+    expect(f.links).toEqual([{ source: 'unknown', category: 'Mercado', value: 22 }])
+    expect(f.origins).toEqual([{ key: 'unknown', label: 'Forma não informada', value: 22 }])
+  })
+
+  it('keeps a real Outros and invents no Outras bucket', () => {
+    const cats = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'Outros']
+    const f = methodCategoryFlow(cats.map((category, i) => tx({ category, amount: 100 - i * 10, method: 'debit' })))
+    expect(f.categories.map((c) => c.key).sort()).toEqual([...cats].sort())
+    expect(f.categories.some((c) => /^(outras|others)$/i.test(c.key))).toBe(false)
+    expect(f.links.find((l) => l.category === 'Outros')?.value).toBe(30)
+  })
+
+  it('ignores rows with no spend left', () => {
+    const f = methodCategoryFlow([tx({ amount: 50, reimbursed_amount: 50, method: 'pix' }), tx({ amount: 0 }), tx({ amount: 8, method: 'debit' })])
+    expect(f.links).toEqual([{ source: 'debit', category: 'Mercado', value: 8 }])
+    expect(methodCategoryFlow([])).toEqual({ origins: [], categories: [], links: [], total: 0 })
+  })
+
+  it('counts a credit expense and not a card bill payment', () => {
+    const d = data([tx({ method: 'credit', amount: 80, bill_month: '2030-07' })], [{ id: 'p1', date: '2030-06-12', amount: 500, card_bank: 'Banco teste' }])
+    const f = methodCategoryFlow(spendScope(d, 'todos', REF))
+    expect(f.links).toEqual([{ source: 'credit', category: 'Mercado', value: 80 }])
+    expect(f.total).toBe(80)
+  })
+
+  it('leaves a future installment out', () => {
+    const plan = { debt_id: 'd1', category: 'Vestimenta', method: 'credit' as const }
+    const d = data([tx({ ...plan, date: '2030-06-10', amount: 100 }), tx({ ...plan, date: '2030-07-10', amount: 100 })])
+    expect(flowTotal(spendScope(d, 'todos', REF))).toBe(100)
+  })
+
+  it('shows cash only under Todos', () => {
+    const d = data([tx({ method: 'cash', amount: 9 }), tx({ method: 'pix', amount: 4 })])
+    expect(methodCategoryFlow(spendScope(d, 'todos', REF)).origins.map((o) => o.key)).toEqual(['pix', 'cash'])
+    for (const f of ['credit', 'debit', 'pix'] as const) {
+      expect(methodCategoryFlow(spendScope(d, f, REF)).origins.some((o) => o.key === 'cash')).toBe(false)
+    }
+  })
+
+  it('category and payment filters change both charts together', () => {
+    const d = data(rows)
+    const apply = (pay: PayFilter, cat: string | null) => spendScope(d, pay, REF).filter((t) => !cat || t.category === cat)
+    const both = (pay: PayFilter, cat: string | null) => {
+      const r = apply(pay, cat)
+      return { tree: categoryShare(r).reduce((s, x) => s + x.value, 0), sankey: methodCategoryFlow(r).total, keys: categoryShare(r).map((s) => s.key), cats: methodCategoryFlow(r).categories.map((c) => c.key) }
+    }
+    const all = both('todos', null)
+    expect(cents(all.tree)).toBe(all.sankey)
+    const mercado = both('todos', 'Mercado')
+    expect(mercado).toMatchObject({ sankey: 50, keys: ['Mercado'], cats: ['Mercado'] })
+    const credit = both('credit', null)
+    expect(credit).toMatchObject({ sankey: 40, keys: ['Mercado', 'Pet'], cats: ['Mercado', 'Pet'] })
+    expect(methodCategoryFlow(apply('credit', null)).origins.map((o) => o.key)).toEqual(['credit'])
+    const both2 = both('credit', 'Pet')
+    expect(both2).toMatchObject({ sankey: 10, keys: ['Pet'], cats: ['Pet'] })
+  })
+})
+
+describe('treemapRects', () => {
+  const slices = [{ key: 'A', value: 50 }, { key: 'B', value: 30 }, { key: 'C', value: 12 }, { key: 'D', value: 5 }, { key: 'E', value: 3 }]
+  const area = (r: { w: number; h: number }) => r.w * r.h
+
+  it('fills the box with areas proportional to value', () => {
+    const W = 320, H = 180
+    const rects = treemapRects(slices, W, H)
+    expect(rects.map((r) => r.key).sort()).toEqual(['A', 'B', 'C', 'D', 'E'])
+    const sum = rects.reduce((s, r) => s + area(r), 0)
+    expect(Math.abs(sum - W * H) / (W * H)).toBeLessThan(0.01)
+    for (const r of rects) {
+      const want = r.value / 100
+      expect(Math.abs(area(r) / (W * H) - want)).toBeLessThan(0.01)
+      expect(r.x).toBeGreaterThanOrEqual(-1e-6)
+      expect(r.y).toBeGreaterThanOrEqual(-1e-6)
+      expect(r.x + r.w).toBeLessThanOrEqual(W + 1e-6)
+      expect(r.y + r.h).toBeLessThanOrEqual(H + 1e-6)
+    }
+  })
+
+  it('does not overlap', () => {
+    const rects = treemapRects(slices, 300, 200)
+    for (const a of rects) for (const b of rects) {
+      if (a === b) continue
+      const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+      const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+      expect(ox > 1e-6 && oy > 1e-6).toBe(false)
+    }
+  })
+
+  it('handles one slice, empty and all-zero input', () => {
+    expect(treemapRects([{ key: 'A', value: 7 }], 100, 50)).toEqual([{ key: 'A', x: 0, y: 0, w: 100, h: 50, value: 7 }])
+    expect(treemapRects([], 100, 50)).toEqual([])
+    expect(treemapRects([{ key: 'A', value: 0 }], 100, 50)).toEqual([])
+    expect(treemapRects(slices, 0, 50)).toEqual([])
   })
 })
 
@@ -141,7 +248,7 @@ describe('split rows weigh through spendOf', () => {
   const split = { split_share_pct: 60, partner_amount: 40 } // contractual personal share would be 60
   const weight = (r?: number) => {
     const t = tx({ amount: 100, ...split, ...(r === undefined ? {} : { reimbursed_amount: r }) })
-    return { t, w: categoryFlow([t], [t.date], (d) => d).totals[0], share: categoryShare([t])[0].value }
+    return { t, w: flowTotal([t]), share: categoryShare([t])[0].value }
   }
 
   it('unpaid: the full amount', () => {

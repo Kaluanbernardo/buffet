@@ -1,7 +1,7 @@
 import { useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { flowBands, type Flow, type FlowMode, type Slice } from '../data/derive'
+import { PAY_ORIGIN_LABEL, treemapRects, type SankeyFlow, type Slice } from '../data/derive'
 import { dayLabel, money, moneyCompact, today } from '../lib/format'
-import { catColor } from './ui'
+import { catColor, NEUTRAL_MARK } from './ui'
 
 const pct = (share: number) => `${Math.round(share * 100)}%`
 const sliceColor = catColor
@@ -262,84 +262,168 @@ export function Ring({ value, total, size = 52, label }: { value: number; total:
   )
 }
 
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text)
+const HALO = { paintOrder: 'stroke', stroke: 'rgba(0,0,0,0.45)', strokeWidth: 2.5, strokeLinejoin: 'round' } as const
+const EMPTY = <p className="py-6 text-center text-sm text-faint">Sem gastos para mostrar.</p>
+
 /**
- * Spend by category over time, one band per category in the same colours as the legend. 'area' is stacked on a zero
- * baseline with a monetary Y axis; 'stream' centres the bands around the middle line and has no value axis at all —
- * only the tooltip reads amounts. Pointer / arrows pick a point; hovering a band or legend row isolates its category.
+ * Category treemap: one mosaic, area = spend. Name and compact amount sit inside the blocks big enough for them; the legend
+ * below carries every category with its full value, and the line above reads out the touched block. Tap filters.
  */
-export function CategoryFlow({ flow, mode, labels, slices, from, to, label, onPick }: {
-  flow: Flow; mode: FlowMode; labels: string[]; slices: Slice[]; from: string; to: string; label: string; onPick?: (key: string) => void
-}) {
-  const n = flow.keys.length
-  // Same anchor as the other charts: today when it is in the window, otherwise the last point.
-  // A future empty day must not be the default readout.
-  const rest = (() => {
-    const t = today()
-    const at = flow.keys.findIndex((k) => k === t || k === t.slice(0, 7))
-    return at >= 0 ? at : Math.max(0, n - 1)
-  })()
-  const [sel, setSel] = useState(rest)
+export function Treemap({ slices, label, onPick }: { slices: Slice[]; label: string; onPick?: (key: string) => void }) {
   const [hot, setHot] = useState<string | null>(null)
-  const W = 300, H = 120
-  const { bands, min, max } = flowBands(flow, mode)
-  const i = Math.min(sel, n - 1)
-  const span = max - min || 1
-  const y = (v: number) => H - ((v - min) / span) * H
-  // One point still has to be a visible band: draw it as a short plateau.
-  const pts = n === 1 ? [{ k: 0, px: W * 0.2 }, { k: 0, px: W * 0.8 }] : Array.from({ length: n }, (_, k) => ({ k, px: (k / (n - 1)) * W }))
-  const path = (b: { lo: number[]; hi: number[] }) =>
-    `M${pts.map((p) => `${p.px},${y(b.hi[p.k])}`).join('L')}L${[...pts].reverse().map((p) => `${p.px},${y(b.lo[p.k])}`).join('L')}Z`
-  const cursor = n === 1 ? W / 2 : (i / (n - 1)) * W
-  const ticks = mode === 'area' ? [0, 0.5, 1].map((f) => max * f) : []
-  const cur = bands.find((b) => b.cat === hot)
-  const readout = cur ? { name: cur.cat, value: flow.values[flow.cats.indexOf(cur.cat)][i] } : { name: 'Total', value: flow.totals[i] }
-
-  const pick = (e: PointerEvent<SVGSVGElement>) => {
-    const r = e.currentTarget.getBoundingClientRect()
-    setSel(Math.max(0, Math.min(n - 1, Math.round(((e.clientX - r.left) / r.width) * (n - 1)))))
-  }
-  const key = (e: KeyboardEvent) => {
-    if (e.key === 'ArrowLeft') { e.preventDefault(); setSel(Math.max(0, i - 1)) }
-    if (e.key === 'ArrowRight') { e.preventDefault(); setSel(Math.min(n - 1, i + 1)) }
-  }
-
-  if (n === 0 || bands.length === 0) return <p className="py-6 text-center text-sm text-faint">Sem gastos para mostrar.</p>
+  const [sel, setSel] = useState<string | null>(null)
+  const W = 340, H = 210
+  const rects = treemapRects(slices, W, H)
+  if (rects.length === 0) return EMPTY
+  const total = slices.reduce((s, x) => s + x.value, 0)
+  const at = slices.find((x) => x.key === (hot ?? sel))
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between gap-3 text-sm" aria-live="polite">
-        <span className="text-muted first-letter:uppercase">{labels[i]}</span>
-        <span className="money truncate text-right"><span className="text-faint">{readout.name} · </span><span className="font-semibold">{money(readout.value)}</span></span>
+        <span className="min-w-0 truncate text-muted">{at ? at.key : 'Total'}</span>
+        <span className="money flex-none font-semibold">{money(at ? at.value : total)}</span>
       </div>
-      <div className="flex gap-2">
-        {mode === 'area' && (
-          <div aria-hidden className="relative h-[124px] w-11 flex-none text-right text-[10px] text-faint">
-            {ticks.map((t, k) => <span key={k} className="money absolute right-0 -translate-y-1/2 leading-none" style={{ top: `${(y(t) / H) * 100}%` }}>{t === 0 ? '0' : moneyCompact(t)}</span>)}
-          </div>
-        )}
-        <svg viewBox={`0 -2 ${W} ${H + 4}`} preserveAspectRatio="none" className="block h-[124px] min-w-0 flex-1 touch-pan-y outline-none"
-          tabIndex={0} role="img" aria-label={`${label}. Use as setas para navegar.`}
-          onPointerMove={pick} onPointerDown={pick} onPointerLeave={() => setSel(rest)} onKeyDown={key}>
-          {mode === 'area' && ticks.map((t, k) => (
-            <line key={k} x1={0} x2={W} y1={y(t)} y2={y(t)} stroke="var(--color-line)" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-          ))}
-          {bands.map((b) => (
-            <path key={b.cat} d={path(b)} fill={catColor(b.cat)} opacity={hot && hot !== b.cat ? 0.3 : 0.9}
-              onPointerEnter={() => setHot(b.cat)} onPointerLeave={() => setHot(null)} className="transition-opacity duration-150">
-              <title>{`${b.cat}: ${money(flow.values[flow.cats.indexOf(b.cat)][i])}`}</title>
-            </path>
-          ))}
-          <line x1={cursor} x2={cursor} y1={-2} y2={H + 2} stroke="var(--color-ink)" strokeOpacity={0.5} strokeWidth={1} vectorEffect="non-scaling-stroke" />
-        </svg>
-      </div>
-      <div className={`mt-2 flex justify-between text-xs text-faint ${mode === 'area' ? 'pl-[3.25rem]' : ''}`}>
-        <span className="first-letter:uppercase">{from}</span>
-        <span className="first-letter:uppercase">{to}</span>
-      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="block h-auto w-full" role="img"
+        aria-label={`${label}: ${slices.map((x) => `${x.key} ${money(x.value)}`).join(', ')}`}>
+        {rects.map((r) => {
+          const w = Math.max(0, r.w - 2), h = Math.max(0, r.h - 2)
+          const text = w >= 56 && h >= 30
+          return (
+            <g key={r.key} onPointerEnter={() => setHot(r.key)} onPointerLeave={() => setHot(null)} onPointerDown={() => setSel(r.key)}
+              onClick={() => onPick?.(r.key)} className={`transition-opacity duration-150 ${onPick ? 'cursor-pointer' : ''}`} opacity={hot && hot !== r.key ? 0.45 : 1}>
+              <title>{`${r.key}: ${money(r.value)}`}</title>
+              <rect x={r.x + 1} y={r.y + 1} width={w} height={h} rx={4} fill={catColor(r.key)} />
+              {text && (
+                <text x={r.x + 7} y={r.y + 17} fill="#fff" fontSize={11} fontWeight={700} style={HALO}>
+                  {clip(r.key, Math.floor((w - 10) / 5.8))}
+                  <tspan x={r.x + 7} dy={14} fontSize={10} fontWeight={600} className="money">{moneyCompact(r.value)}</tspan>
+                </text>
+              )}
+            </g>
+          )
+        })}
+      </svg>
       <Legend slices={slices} hot={hot} setHot={setHot} onPick={onPick} className="mt-3.5" />
       <table className="sr-only">
         <caption>{label}</caption>
-        <thead><tr><th>Categoria</th>{labels.map((l, k) => <th key={flow.keys[k]}>{l}</th>)}</tr></thead>
-        <tbody>{flow.cats.map((c, ci) => <tr key={c}><th scope="row">{c}</th>{flow.values[ci].map((v, k) => <td key={flow.keys[k]}>{money(v)}</td>)}</tr>)}</tbody>
+        <thead><tr><th>Categoria</th><th>Valor</th></tr></thead>
+        <tbody>{slices.map((x) => <tr key={x.key}><th scope="row">{x.key}</th><td>{money(x.value)}</td></tr>)}</tbody>
+      </table>
+    </div>
+  )
+}
+
+type Hot = { kind: 'link'; i: number } | { kind: 'cat'; key: string } | { kind: 'origin'; key: string }
+
+/**
+ * Sankey, payment method → category. Left bars are the methods, right bars the categories, ribbons the spend of one method in
+ * one category (thickness = value on a single scale). Tiny nodes keep a minimum height; the readout and tooltips carry the true
+ * amount. Tap a category bar or ribbon to filter by it.
+ */
+export function Sankey({ flow, label, onPick }: { flow: SankeyFlow; label: string; onPick?: (key: string) => void }) {
+  const [hot, setHot] = useState<Hot | null>(null)
+  const [sel, setSel] = useState<Hot | null>(null)
+  if (flow.links.length === 0 || flow.total <= 0) return EMPTY
+
+  const W = 420, bw = 8, xl = 136, xr = W - 144 - bw, minH = 4, gap = 6, row = 24
+  const H = Math.min(520, Math.max(180, Math.max(flow.origins.length, flow.categories.length) * row))
+  // One scale for both columns: the tighter column decides, the other is centred.
+  const place = <T extends { key: string; value: number }>(nodes: T[], scale: number) => {
+    const hs = nodes.map((n) => Math.max(minH, n.value * scale))
+    const used = hs.reduce((a, b) => a + b, 0) + gap * (nodes.length - 1)
+    let y = Math.max(0, (H - used) / 2)
+    return new Map(nodes.map((n, i) => { const o = { y, h: hs[i] }; y += hs[i] + gap; return [n.key, o] as const }))
+  }
+  // Largest scale at which both columns (with minimum heights and gaps) still fit in H.
+  const scaleFor = (nodes: { value: number }[]) => {
+    let scale = (H - gap * (nodes.length - 1)) / flow.total
+    for (let k = 0; k < 6; k++) {
+      const tiny = nodes.filter((n) => n.value * scale < minH)
+      const room = H - gap * (nodes.length - 1) - tiny.length * minH
+      const big = nodes.reduce((s, n) => s + (n.value * scale < minH ? 0 : n.value), 0)
+      if (big <= 0 || room <= 0) break
+      scale = room / big
+    }
+    return scale
+  }
+  const scale = Math.min(scaleFor(flow.origins), scaleFor(flow.categories))
+  const left = place(flow.origins, scale)
+  const right = place(flow.categories, scale)
+
+  // Ribbons stack inside each node in link order (origin-major, so categories see origins in method order).
+  const start = (nodes: { key: string; value: number }[], pos: Map<string, { y: number; h: number }>) =>
+    new Map(nodes.map((n) => [n.key, pos.get(n.key)!.y + (pos.get(n.key)!.h - n.value * scale) / 2]))
+  const fromOff = start(flow.origins, left), toOff = start(flow.categories, right)
+  const ribbons = flow.links.map((l, i) => {
+    const t = Math.max(0.75, l.value * scale)
+    const ya = fromOff.get(l.source)!, yb = toOff.get(l.category)!
+    fromOff.set(l.source, ya + l.value * scale)
+    toOff.set(l.category, yb + l.value * scale)
+    const x0 = xl + bw, x1 = xr, m = (x0 + x1) / 2
+    return { i, l, d: `M${x0},${ya}C${m},${ya} ${m},${yb} ${x1},${yb}L${x1},${yb + t}C${m},${yb + t} ${m},${ya + t} ${x0},${ya + t}Z` }
+  })
+
+  // One label per node (two lines), kept apart when nodes are too small for them.
+  const labels = (nodes: { key: string }[], pos: Map<string, { y: number; h: number }>) => {
+    const ys = nodes.map((n) => pos.get(n.key)!.y + pos.get(n.key)!.h / 2)
+    for (let i = 1; i < ys.length; i++) ys[i] = Math.max(ys[i], ys[i - 1] + row - 2)
+    const over = (ys[ys.length - 1] ?? 0) + row / 2 - H
+    if (over > 0) for (let i = ys.length - 1; i >= 0; i--) { ys[i] -= over; if (i > 0) ys[i - 1] = Math.min(ys[i - 1], ys[i] - (row - 2)) }
+    return ys
+  }
+  const lys = labels(flow.origins, left), rys = labels(flow.categories, right)
+
+  const cur = hot ?? sel
+  const touches = (r: { l: { source: string; category: string }; i: number }) =>
+    !cur || (cur.kind === 'link' ? cur.i === r.i : cur.kind === 'cat' ? cur.key === r.l.category : cur.key === r.l.source)
+  const readout = !cur ? { name: 'Total', value: flow.total }
+    : cur.kind === 'link' ? { name: `${PAY_ORIGIN_LABEL[flow.links[cur.i].source]} → ${flow.links[cur.i].category}`, value: flow.links[cur.i].value }
+    : cur.kind === 'cat' ? { name: cur.key, value: flow.categories.find((c) => c.key === cur.key)?.value ?? 0 }
+    : { name: PAY_ORIGIN_LABEL[cur.key as keyof typeof PAY_ORIGIN_LABEL], value: flow.origins.find((o) => o.key === cur.key)?.value ?? 0 }
+  const on = (h: Hot) => ({ onPointerEnter: () => setHot(h), onPointerLeave: () => setHot(null), onPointerDown: () => setSel(h) })
+  const pick = (c: string) => ({ onClick: () => onPick?.(c), className: `transition-opacity duration-150 ${onPick ? 'cursor-pointer' : ''}` })
+
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between gap-3 text-sm" aria-live="polite">
+        <span className="min-w-0 truncate text-muted">{readout.name}</span>
+        <span className="money flex-none font-semibold">{money(readout.value)}</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="block h-auto w-full" role="img"
+        aria-label={`${label}: ${flow.links.map((l) => `${PAY_ORIGIN_LABEL[l.source]} para ${l.category} ${money(l.value)}`).join(', ')}`}>
+        {ribbons.map((r) => (
+          <path key={r.i} d={r.d} fill={catColor(r.l.category)} opacity={cur ? (touches(r) ? 0.8 : 0.12) : 0.5} {...on({ kind: 'link', i: r.i })} {...pick(r.l.category)}>
+            <title>{`${PAY_ORIGIN_LABEL[r.l.source]} → ${r.l.category}: ${money(r.l.value)}`}</title>
+          </path>
+        ))}
+        {flow.origins.map((o, k) => {
+          const p = left.get(o.key)!
+          return (
+            <g key={o.key} {...on({ kind: 'origin', key: o.key })}>
+              <title>{`${o.label}: ${money(o.value)}`}</title>
+              <rect x={xl} y={p.y} width={bw} height={p.h} rx={2} fill={NEUTRAL_MARK} />
+              <text x={xl - 6} y={lys[k] - 2} textAnchor="end" fontSize={10.5} fontWeight={600} fill="var(--color-ink)">{clip(o.label, 24)}</text>
+              <text x={xl - 6} y={lys[k] + 10} textAnchor="end" fontSize={10} fill="var(--color-muted)" className="money">{moneyCompact(o.value)}</text>
+            </g>
+          )
+        })}
+        {flow.categories.map((c, k) => {
+          const p = right.get(c.key)!
+          return (
+            <g key={c.key} {...on({ kind: 'cat', key: c.key })} {...pick(c.key)}>
+              <title>{`${c.key}: ${money(c.value)}`}</title>
+              <rect x={xr} y={p.y} width={bw} height={p.h} rx={2} fill={catColor(c.key)} />
+              <text x={xr + bw + 6} y={rys[k] - 2} fontSize={10.5} fontWeight={600} fill="var(--color-ink)">{clip(c.key, 24)}</text>
+              <text x={xr + bw + 6} y={rys[k] + 10} fontSize={10} fill="var(--color-muted)" className="money">{moneyCompact(c.value)}</text>
+            </g>
+          )
+        })}
+      </svg>
+      <table className="sr-only">
+        <caption>{label}</caption>
+        <thead><tr><th>Forma de pagamento</th><th>Categoria</th><th>Valor</th></tr></thead>
+        <tbody>{flow.links.map((l) => <tr key={`${l.source}-${l.category}`}><th scope="row">{PAY_ORIGIN_LABEL[l.source]}</th><td>{l.category}</td><td>{money(l.value)}</td></tr>)}</tbody>
       </table>
     </div>
   )

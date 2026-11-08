@@ -234,43 +234,88 @@ export const payMatches = (t: { method?: PayMethod }, f: PayFilter) => f === 'to
 export const spendScope = (data: BuffetData, pay: PayFilter = 'todos', ref = today()) =>
   data.transactions.filter((t) => isPosted(t, ref) && payMatches(t, pay))
 
-export type FlowMode = 'area' | 'stream'
-/** Spend per category per point on the time axis (day or month); `values[c][i]` pairs with `cats[c]` and `keys[i]`. */
-export interface Flow { keys: string[]; cats: string[]; values: number[][]; totals: number[] }
+// ---------------------------------------------------------------- treemap e sankey
+
+export type PayOrigin = 'credit' | 'debit' | 'pix' | 'cash' | 'unknown'
+export const PAY_ORIGIN_LABEL: Record<PayOrigin, string> = {
+  credit: 'Crédito', debit: 'Débito', pix: 'PIX', cash: 'Dinheiro', unknown: 'Forma não informada',
+}
+const ORIGINS = Object.keys(PAY_ORIGIN_LABEL) as PayOrigin[]
+/** Where the money came from, read only from the row's own method — never inferred from bank, bill_month or income. */
+export const payOrigin = (t: { method?: PayMethod }): PayOrigin => t.method ?? 'unknown'
+
+export interface SankeyLink { source: PayOrigin; category: string; value: number }
+export interface SankeyFlow {
+  origins: { key: PayOrigin; label: string; value: number }[]
+  categories: { key: string; value: number }[]
+  links: SankeyLink[]
+  total: number
+}
 /**
- * Category × time matrix of what rows weigh in spend (spendOf). `keys` are the points in order; a row whose `keyOf` is not
- * among them is outside the window. Categories are the ones with spend in the window, largest first (ties by name).
+ * Spend (spendOf) by payment method → category. Origins follow the fixed order of PAY_ORIGIN_LABEL and drop out when empty;
+ * categories follow categoryShare (largest, then name). Rows with no spend left are ignored.
  */
-export function categoryFlow(tx: (Spendable & { category: string; date: string })[], keys: string[], keyOf: (date: string) => string): Flow {
-  const at = new Map(keys.map((k, i) => [k, i]))
-  const by = new Map<string, number[]>()
+export function methodCategoryFlow(tx: (Spendable & { category: string; method?: PayMethod })[]): SankeyFlow {
+  const by = new Map<string, number>()
   for (const t of tx) {
-    const i = at.get(keyOf(t.date))
-    if (i === undefined) continue
-    const row = by.get(t.category) ?? keys.map(() => 0)
-    row[i] = cents(row[i] + spendOf(t))
-    by.set(t.category, row)
+    const v = Math.round(spendOf(t) * 100)
+    if (v <= 0) continue
+    const k = `${payOrigin(t)}\u0000${t.category}`
+    by.set(k, (by.get(k) ?? 0) + v)
   }
-  const sum = (xs: number[]) => cents(xs.reduce((s, v) => s + v, 0))
-  const rows = [...by].filter(([, v]) => sum(v) > 0).sort((a, b) => sum(b[1]) - sum(a[1]) || a[0].localeCompare(b[0]))
-  const values = rows.map(([, v]) => v)
-  return { keys, cats: rows.map(([c]) => c), values, totals: keys.map((_, i) => cents(values.reduce((s, v) => s + v[i], 0))) }
+  const cats = categoryShare(tx)
+  const links: SankeyLink[] = []
+  for (const source of ORIGINS) {
+    for (const c of cats) {
+      const v = by.get(`${source}\u0000${c.key}`)
+      if (v) links.push({ source, category: c.key, value: v / 100 })
+    }
+  }
+  const origins = ORIGINS.map((key) => ({ key, label: PAY_ORIGIN_LABEL[key], value: cents(links.filter((l) => l.source === key).reduce((s, l) => s + l.value, 0)) })).filter((o) => o.value > 0)
+  return { origins, categories: cats.map(({ key, value }) => ({ key, value })), links, total: cents(links.reduce((s, l) => s + l.value, 0)) }
 }
 
-export interface Band { cat: string; lo: number[]; hi: number[] }
-/**
- * Layers stacked per point. 'area': the first layer sits on a zero baseline. 'stream': the baseline of each point is minus
- * half of that point's total, so the whole stack is centred on zero. Layer order = `flow.cats`.
- */
-export function flowBands(flow: Flow, mode: FlowMode): { bands: Band[]; base: number[]; min: number; max: number } {
-  const base = flow.totals.map((t) => (mode === 'stream' ? -t / 2 : 0))
-  const top = [...base]
-  const bands = flow.cats.map((cat, c) => {
-    const lo = [...top]
-    flow.values[c].forEach((v, i) => { top[i] += v })
-    return { cat, lo, hi: [...top] }
-  })
-  return { bands, base, min: Math.min(0, ...base), max: Math.max(0, ...top) }
+export interface TreemapRect { key: string; x: number; y: number; w: number; h: number; value: number }
+/** Squarified treemap (Bruls et al.): rectangles of area proportional to value that tile the `width` × `height` box. */
+export function treemapRects(slices: { key: string; value: number }[], width: number, height: number): TreemapRect[] {
+  const items = slices.filter((s) => s.value > 0).sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
+  const sum = items.reduce((s, x) => s + x.value, 0)
+  if (!(width > 0 && height > 0) || sum <= 0) return []
+  const k = (width * height) / sum
+  const out: TreemapRect[] = []
+  let x = 0, y = 0, w = width, h = height
+  // Worst aspect ratio of a row of areas laid along a side of length `side`.
+  const worst = (areas: number[], side: number) => {
+    const s = areas.reduce((a, b) => a + b, 0)
+    return Math.max(...areas.map((a) => Math.max((side * side * a) / (s * s), (s * s) / (side * side * a))))
+  }
+  let i = 0
+  while (i < items.length) {
+    const side = Math.min(w, h)
+    const row = [i]
+    let areas = [items[i].value * k]
+    while (i + row.length < items.length) {
+      const next = [...areas, items[i + row.length].value * k]
+      if (worst(next, side) > worst(areas, side)) break
+      areas = next
+      row.push(i + row.length)
+    }
+    const used = areas.reduce((a, b) => a + b, 0)
+    const last = i + row.length >= items.length
+    if (w >= h) { // row is a column on the left, filling the height
+      const colW = last ? w : used / h
+      let yy = y
+      row.forEach((r, j) => { const hh = j === row.length - 1 ? y + h - yy : areas[j] / colW; out.push({ key: items[r].key, x, y: yy, w: colW, h: hh, value: items[r].value }); yy += hh })
+      x += colW; w -= colW
+    } else { // row is a strip on top, filling the width
+      const rowH = last ? h : used / w
+      let xx = x
+      row.forEach((r, j) => { const ww = j === row.length - 1 ? x + w - xx : areas[j] / rowH; out.push({ key: items[r].key, x: xx, y, w: ww, h: rowH, value: items[r].value }); xx += ww })
+      y += rowH; h -= rowH
+    }
+    i += row.length
+  }
+  return out
 }
 
 type Day = { date: string; day: number; total: number }

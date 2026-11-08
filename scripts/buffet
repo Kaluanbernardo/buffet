@@ -17,6 +17,7 @@ GASTOS (method = meio de pagamento; bank = instituição)
         fatura = 1ª + k−1). Parcela = --parcela ou total/N truncado; a última absorve o arredondamento.
         Sem --sub, vincula sozinho se o merchant bater com o match de UMA assinatura ativa com próxima a ±7 dias
         --split: já lança dividido; --share = a SUA parte em % (padrão 50; sozinho já implica --split). Não vale com --x
+                 --share 0: a outra pessoa deve 100% (reembolso integral); o caixa não muda ao lançar
   buffet del <id>                             apaga um lançamento (parcela de plano: use del-plan)
   buffet list [--date d | --month AAAA-MM]    lançamentos (padrão: mês atual) + total; futuras marcadas "agendada"
   buffet import-jsonl <arquivo>               importa data/expenses.jsonl (idempotente pelo id)
@@ -24,6 +25,7 @@ GASTOS (method = meio de pagamento; bank = instituição)
 DIVIDIDO E REEMBOLSO (o valor cheio nunca muda; somas de gasto usam effective_amount = amount − reimbursed_amount; fatura segue cheia)
   <gasto> = id, começo do id (6+ caracteres) ou trecho do merchant; busca ambígua aborta e lista as opções
   buffet split <gasto> [--share 50]           marca ou ajusta a SUA parte, em %; não mexe no caixa. Parcela de plano: não
+                                              --share 0: a outra pessoa deve 100%; o caixa só muda no reimburse
   buffet unsplit <gasto>                      desfaz a divisão; só sem reembolso registrado
   buffet reimburse <gasto> [--amount v] [--date d] [--no-cash]
         registra o recebimento (padrão: tudo o que falta, hoje) e soma ao cash_balance; --no-cash: entrou em outro lugar
@@ -483,8 +485,8 @@ def pshare(s):
         v = round(float(str(s).replace("%", "").replace(",", ".")), 2)
     except ValueError:
         sys.exit(f"erro: --share inválido '{s}'")
-    if not 0 < v < 100:
-        sys.exit("erro: --share (a sua parte) precisa ficar entre 0 e 100")
+    if not 0 <= v < 100:
+        sys.exit("erro: --share (a sua parte) precisa ficar entre 0 (inclusive) e 100 (exclusive)")
     return v
 
 

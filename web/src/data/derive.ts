@@ -1,4 +1,4 @@
-import type { Bank, Budget, BudgetGroup, BuffetData, CardPayment, Debt, PayMethod, SplitAction, SubCycle, Subscription, Transaction } from './types'
+import type { Bank, Budget, BudgetGroup, BuffetData, CardPayment, Debt, PayMethod, ReviewAction, SplitAction, SubCycle, Subscription, Transaction } from './types'
 import { addDays, monthClock, monthKey, parseISO, shiftMonth, today } from '../lib/format'
 
 const cents = (v: number) => Math.round(v * 100) / 100
@@ -58,6 +58,51 @@ export function applySplit(data: BuffetData, a: SplitAction): BuffetData {
     next = { ...t, ...clearReimbursed }
   }
   return { ...data, config: { ...data.config, cash_balance: cash }, transactions: data.transactions.map((x) => (x.id === t.id ? next : x)) }
+}
+
+// ---------------------------------------------------------------- pendentes de notificação
+
+/** Came from a bank notification and wasn't reviewed yet. It counts in every total like any row; screens show a marker. */
+export const isPending = (t: Transaction) => t.review_status === 'pending'
+
+/** Pendentes de revisão (oldest first), what they weigh, how many look like a spend logged by hand, and refunds waiting. */
+export function pendingOf(data: BuffetData) {
+  const rows = data.transactions.filter(isPending).sort((a, b) => a.date.localeCompare(b.date) || (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+  return { rows, total: cents(rows.reduce((s, t) => s + spendOf(t), 0)), duplicates: rows.filter((t) => t.possible_duplicate_of).length,
+    refunds: data.refunds ?? [] }
+}
+
+/**
+ * Same rules as public.buffet_tx_review / buffet_tx_discard / buffet_notif_dismiss for the device-only store (pending rows only
+ * come from the database, so this is the fallback). Changing amount, method, bank or date needs the cash account and card
+ * cycles the database keeps: refused here.
+ */
+export function applyReview(data: BuffetData, a: ReviewAction): BuffetData {
+  if (a.kind === 'dismiss') return { ...data, refunds: (data.refunds ?? []).filter((r) => r.id !== a.id) }
+  if (a.kind === 'confirm') return a.ids.reduce((d, id) => applyReview(d, { kind: 'review', id, patch: {}, confirm: true }), data)
+  const t = data.transactions.find((x) => x.id === a.id)
+  if (!t) throw new Error('gasto não encontrado')
+  if (a.kind === 'discard') {
+    if (!isPending(t)) throw new Error('só dá para descartar gasto pendente de revisão')
+    if (t.reimbursed_amount != null) throw new Error('esse gasto tem reembolso registrado: desfaça o reembolso antes')
+    const cash = data.config.cash_balance ?? null
+    const back = cash != null ? t.cash_debited ?? 0 : 0
+    return { ...data, config: { ...data.config, cash_balance: cash == null ? cash : cents(cash + back) }, transactions: data.transactions.filter((x) => x.id !== t.id) }
+  }
+  if (t.review_status == null) throw new Error('esse gasto não veio de notificação')
+  const p = a.patch
+  const moves = (p.amount !== undefined && p.amount !== t.amount) || (p.method !== undefined && p.method !== t.method)
+    || (p.bank !== undefined && p.bank !== t.bank) || (p.date !== undefined && p.date !== t.date)
+  if (moves) throw new Error('mudar valor, meio, banco ou data de um pendente só com o banco de dados')
+  if (p.merchant !== undefined && !p.merchant.trim()) throw new Error('estabelecimento vazio')
+  if (p.category !== undefined && !p.category.trim()) throw new Error('categoria vazia')
+  let d: BuffetData = { ...data, transactions: data.transactions.map((x) => (x.id !== t.id ? x : {
+    ...x, ...(p.merchant !== undefined ? { merchant: p.merchant.trim() } : {}), ...(p.category !== undefined ? { category: p.category.trim() } : {}),
+    ...('note' in p ? { note: p.note?.trim() || undefined } : {}) })) }
+  if ('share' in p) d = p.share == null ? (t.split_share_pct != null ? applySplit(d, { kind: 'unsplit', id: t.id }) : d) : applySplit(d, { kind: 'split', id: t.id, share: p.share })
+  if ('reimburse' in p) d = applySplit(d, { kind: 'reimburse', id: t.id, amount: p.reimburse ?? undefined, cash: p.reimburse_cash ?? true })
+  if (a.confirm) d = { ...d, transactions: d.transactions.map((x) => (x.id === t.id ? { ...x, review_status: 'confirmed' as const, possible_duplicate_of: undefined } : x)) }
+  return d
 }
 
 /** Everything the month screens read, computed once from the rows. Defaults to the current month. */

@@ -53,7 +53,7 @@ function useSplitToast() {
   })
 }
 
-const FormError = ({ children }: { children: ReactNode }) => children ? <p role="alert" className="text-sm text-negative">{children}</p> : null
+export const FormError = ({ children }: { children: ReactNode }) => children ? <p role="alert" className="text-sm text-negative">{children}</p> : null
 
 function SplitForm({ tx, onDone, onCancel }: { tx: Transaction; onDone: () => void; onCancel: () => void }) {
   const toast = useSplitToast()

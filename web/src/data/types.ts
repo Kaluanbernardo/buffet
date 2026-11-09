@@ -17,9 +17,33 @@ export interface Transaction {
   split_share_pct?: number; partner_amount?: number
   /** Received so far, how much of it entered cash_balance (undo takes back only that), and the last receipt's date. */
   reimbursed_amount?: number; reimbursed_cash?: number; reimbursed_at?: string
-  /** Kept so that undoing a delete brings the row back as it was. */
-  source?: 'app' | 'bot'; created_at?: string
+  /**
+   * Came from a bank notification (MacroDroid → Edge Function, docs/captura-notificacoes.md): 'pending' until reviewed — it
+   * already counts in every total, with a marker. notification_id = the buffet_notification_inbox row it came from.
+   * cash_debited = what its arrival took from cash_balance (debit/PIX from the cash account); discarding gives exactly that back.
+   * possible_duplicate_of = a spend logged by hand (chat/app) that looks like the same one. Only changed through
+   * public.buffet_tx_review / buffet_tx_discard.
+   */
+  review_status?: ReviewStatus; notification_id?: string; cash_debited?: number; possible_duplicate_of?: string
+  /** Kept so that undoing a delete brings the row back as it was. 'notificacao' = written by the Edge Function. */
+  source?: 'app' | 'bot' | 'notificacao'; created_at?: string
 }
+export type ReviewStatus = 'pending' | 'confirmed'
+/** Only the keys present change (public.buffet_tx_review). note null clears it; share null undoes the split; reimburse null = all that's owed. */
+export interface ReviewPatch {
+  merchant?: string; category?: string; note?: string | null; amount?: number; date?: string; method?: 'debit' | 'pix' | 'credit'; bank?: string
+  share?: number | null; reimburse?: number | null; reimburse_cash?: boolean
+}
+/** Reviewing a spend that came from a notification. Each is one database call that keeps cash_balance and the bill right. */
+export type ReviewAction =
+  | { kind: 'review'; id: string; patch: ReviewPatch; confirm: boolean }
+  | { kind: 'discard'; id: string }
+  /** Confirm several without editing (one reload at the end). */
+  | { kind: 'confirm'; ids: string[] }
+  /** A refund notification (inbox id): it never created anything; this only takes it off the list. */
+  | { kind: 'dismiss'; id: string }
+/** A refund (estorno) that arrived by notification and waits for the user: nothing was changed automatically. */
+export interface NotificationRefund { id: string; posted_at: string; bank?: string; amount?: number; merchant?: string; title?: string; body?: string }
 /** Operations on a split spend: each is one database call that also keeps cash_balance right. */
 export type SplitAction =
   | { kind: 'split'; id: string; share: number }
@@ -69,4 +93,6 @@ export interface BuffetData {
   incomes: Record<string, number>
   /** False while the subscriptions migration isn't applied on Supabase: the screen explains, nothing syncs. */
   subscriptionsReady?: boolean
+  /** Refunds from notifications waiting for review (buffet_notification_inbox status 'refund'). Empty without the migration. */
+  refunds?: NotificationRefund[]
 }

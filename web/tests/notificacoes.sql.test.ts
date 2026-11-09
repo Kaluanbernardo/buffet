@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { freshDb, OTHER, OWNER, type Db } from './pg'
+import { applyMigrations, freshDb, OTHER, OWNER, stubDb, type Db } from './pg'
 import { isSpend, normalizeInput, parseNotification } from '../../supabase/functions/_shared/notification'
 import { buildPayload, handleIngest, SECRET_HEADER } from '../../supabase/functions/_shared/ingest'
 import type { CategoryContext } from '../../supabase/functions/_shared/category'
@@ -324,5 +324,22 @@ describe('Edge Function de ponta a ponta (handler + banco)', () => {
     const form = new URLSearchParams({ app: 'Nubank', titulo: 'Pix enviado', texto: 'Você enviou R$ 9,00 para Pessoa Exemplo via Pix.', timestamp: at('16:30') }).toString()
     expect(await (await handleIngest(post(form, SECRET, { 'content-type': 'application/x-www-form-urlencoded' }), deps())).json())
       .toMatchObject({ status: 'created', method: 'pix', amount: 9 })
+  })
+})
+
+describe('migration', () => {
+  it('troca o check de source mesmo quando ele tem outro nome no banco, e reaplicar não quebra', async () => {
+    const db = await stubDb()
+    const NEW = '20261109120000_buffet_notification_capture.sql'
+    await applyMigrations(db, (f) => f < NEW)
+    await db.exec('alter table public.buffet_transactions rename constraint buffet_transactions_source_check to legado_source_chk')
+    await applyMigrations(db, (f) => f >= NEW)
+    await applyMigrations(db, (f) => f >= NEW)
+    const checks = await db.query<{ conname: string }>(`select conname from pg_constraint where conrelid = 'public.buffet_transactions'::regclass
+      and contype = 'c' and pg_get_constraintdef(oid) ~ '\\msource\\M'`)
+    expect(checks.rows.map((r) => r.conname)).toEqual(['buffet_transactions_source_check'])
+    await db.exec(`insert into public.buffet_transactions (date, amount, merchant, category, source) values ('2030-06-10', 1, 'x', 'Outros', 'notificacao')`)
+    await expect(db.exec(`insert into public.buffet_transactions (date, amount, merchant, category, source) values ('2030-06-10', 1, 'x', 'Outros', 'outro')`))
+      .rejects.toThrow(/source_check/)
   })
 })

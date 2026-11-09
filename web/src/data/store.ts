@@ -275,13 +275,15 @@ export function BuffetProvider({ children }: { children: ReactNode }) {
   const update = useCallback((fn: (d: BuffetData) => BuffetData) => {
     setData((prev) => { if (!prev) return prev; const next = fn(prev); enqueue(() => store.save(next)); return next })
   }, [enqueue])
-  // A database operation that moves money: after pending saves, then a reload so the screen shows what the database holds.
+  // A database operation that moves money: after pending saves, then a reload so the screen shows what the database holds —
+  // also when it failed, since a multi-step one ("Confirmar os N") may have done part of it.
   const remote = useCallback((op: () => Promise<void>) => new Promise<void>((resolve, reject) => {
     queue.current = queue.current.then(async () => {
-      try { await op() } catch (e) { reject(e instanceof Error ? e : new Error(String(e))); return }
-      // It happened; a failed reload only delays seeing it.
+      let failed: Error | null = null
+      try { await op() } catch (e) { failed = e instanceof Error ? e : new Error(String(e)) }
+      // A failed reload only delays seeing it.
       try { setData(await store.load()); setSyncError(null) } catch (e) { console.error(e); setSyncError(e instanceof Error ? e.message : String(e)) }
-      resolve()
+      if (failed) reject(failed); else resolve()
     })
   }), [])
   const splitAction = useCallback((action: SplitAction) => remote(() => store.split(action)), [remote])

@@ -63,8 +63,19 @@ create index if not exists buffet_transactions_pending_idx on public.buffet_tran
   where review_status = 'pending';
 
 -- Quem gravou: 'notificacao' = a Edge Function. A origem durável é notification_id (o app reescreve source ao editar).
+-- O check do init não tem nome explícito: tira qualquer check sobre source, seja qual for o nome, antes de pôr o novo.
+do $$
+declare
+  c text;
+begin
+  for c in select x.conname from pg_constraint x
+            where x.conrelid = 'public.buffet_transactions'::regclass and x.contype = 'c'
+              and pg_get_constraintdef(x.oid) ~ '\msource\M'
+  loop
+    execute format('alter table public.buffet_transactions drop constraint %I', c);
+  end loop;
+end $$;
 alter table public.buffet_transactions
-  drop constraint if exists buffet_transactions_source_check,
   add constraint buffet_transactions_source_check check (source in ('app', 'bot', 'notificacao'));
 
 -- ---------------------------------------------------------------- travas

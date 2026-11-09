@@ -26,12 +26,22 @@ grant execute on function public.is_owner() to authenticated;
 
 export type Role = 'postgres' | 'anon' | 'authenticated' | 'bot' | 'service_role'
 
-export async function freshDb() {
-  // Datas e timestamps como texto, como a Management API e o PostgREST devolvem (o CLI compara 'AAAA-MM-DD').
+/** Aplica as migrations (em ordem) que passam no filtro. */
+export async function applyMigrations(db: PGlite, keep: (file: string) => boolean = () => true) {
+  for (const f of readdirSync(MIGRATIONS).filter((x) => x.endsWith('.sql') && keep(x)).sort()) await db.exec(readFileSync(resolve(MIGRATIONS, f), 'utf8'))
+}
+
+/** PGlite com o stub do Supabase. Datas e timestamps como texto, como a Management API e o PostgREST devolvem. */
+export async function stubDb() {
   const asText = (v: string) => v
   const db = new PGlite({ parsers: { 1082: asText, 1114: asText, 1184: asText } })
   await db.exec(SUPABASE_STUB)
-  for (const f of readdirSync(MIGRATIONS).filter((x) => x.endsWith('.sql')).sort()) await db.exec(readFileSync(resolve(MIGRATIONS, f), 'utf8'))
+  return db
+}
+
+export async function freshDb() {
+  const db = await stubDb()
+  await applyMigrations(db)
   /** Uma transação como `role` (e, para authenticated, com o JWT de `sub`), como o PostgREST/CLI fazem. */
   const as = async <T = Record<string, unknown>>(role: Role, sql: string, params: unknown[] = [], sub = OWNER): Promise<T[]> =>
     db.transaction(async (tx) => {

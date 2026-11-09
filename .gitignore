@@ -13,3 +13,6 @@ research/claude_bench.*
 .taste-skill/
 data/*.jsonl
 *.jsonl
+
+# relatório local da tarefa (fora do repo)
+/REPORT.md

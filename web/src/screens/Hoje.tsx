@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { useBuffet } from '../data/store'
-import { bills, categoryShare, dailySpend, daysFrom, daysUntilDue, dueLabel, isOpen, monthSummary, posted, receivable, subDueLabel } from '../data/derive'
+import { bills, categoryShare, dailySpend, daysFrom, daysUntilDue, dueLabel, isOpen, isPending, monthSummary, posted, receivable, spendOf, subDueLabel } from '../data/derive'
 import { dayLabel, money, money0, monthKey, plural, shortMonth } from '../lib/format'
 import { CategoryIcon, Columns, Empty, HideValuesButton, PlanTrack, ScreenHeader, Section, Sheet, ThemeButton, toneFor } from '../components/ui'
 import { DailyBars, ShareBar } from '../components/charts'
 import { useActions } from '../components/Actions'
 import { ReceivableList, SplitLine } from '../components/Split'
+import { PendingCard, PendingTag } from '../components/Pending'
 import { SubIcon } from './Assinaturas'
 
 export default function Hoje() {
@@ -41,6 +42,8 @@ export default function Hoje() {
   const cats = m.cats.filter((c) => c.limit > 0 || c.spent > 0).sort((a, b) => b.spent / (b.limit || 1) - a.spent / (a.limit || 1))
   const recent = [...live.transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 4)
   const share = categoryShare(m.tx)
+  // Spends from notifications not reviewed yet: in the totals already, said out loud under the hero.
+  const pendingMonth = m.tx.reduce((s, t) => s + (isPending(t) ? spendOf(t) : 0), 0)
   const billsPaid = data.cardPayments.filter((b) => monthKey(b.date) === m.mk).reduce((s, b) => s + b.amount, 0)
   const daily = dailySpend(live.transactions, 30)
   // Unpaid card bills (open/closed — card installments are paid through them), loans, and active subscriptions not yet
@@ -104,6 +107,9 @@ export default function Hoje() {
             Defina limites no <Link to="/orcamento" className="link">Orçamento</Link> para ver quanto ainda pode gastar por dia.
           </p>
         )}
+        {pendingMonth > 0 && (
+          <p className="money mt-3 text-[13px] text-warning">Inclui {money(pendingMonth)} pendente de revisão</p>
+        )}
         {billsPaid > 0 && (
           <p className="money mt-4 text-[13px] text-faint">Faturas pagas em {clock.name}: {money(billsPaid)} · fora dos gastos</p>
         )}
@@ -116,6 +122,9 @@ export default function Hoje() {
         <span className="text-sm font-semibold text-muted">Saldo em caixa</span>
         <span className="money font-semibold">{data.config.cash_balance == null ? <span className="text-faint">—</span> : money(data.config.cash_balance)}</span>
       </section>
+
+      {/* Spends that arrived by bank notification, waiting for review (already in every total). */}
+      <PendingCard />
 
       {/* Money others still owe on split spends. Not in the balance until it arrives. */}
       {owed.total > 0 && (
@@ -190,6 +199,7 @@ export default function Hoje() {
                   <p className="truncate font-semibold">{t.merchant}</p>
                   <p className="text-[13px] text-faint">{dayLabel(t.date)} · {t.category}</p>
                   <SplitLine t={t} />
+                  <PendingTag t={t} />
                 </div>
                 <span className="money flex-none font-semibold">{money(t.amount)}</span>
               </li>

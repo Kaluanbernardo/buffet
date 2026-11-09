@@ -3,12 +3,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeftRight, CalendarDays, MoreHorizontal, Plus, Repeat, Search, Trash2, X } from 'lucide-react'
 import { useBuffet } from '../data/store'
 import type { CardPayment, Transaction } from '../data/types'
-import { categoryShare, isPosted, methodCategoryFlow, monthDays, monthSummary, PAY_FILTERS, payMatches, posted, spendOf, spendScope, weekDays, type PayFilter } from '../data/derive'
+import { categoryShare, isPending, isPosted, methodCategoryFlow, monthDays, monthSummary, PAY_FILTERS, payMatches, posted, spendOf, spendScope, weekDays, type PayFilter } from '../data/derive'
 import { addDays, dayLabel, money, monthKey, monthName, parseISO, plural, shiftMonth, today, valuesHidden, weekRange, weekStart } from '../lib/format'
 import { catColor, CategoryIcon, Columns, Empty, PeriodSwitcher, ScreenHeader, Segmented, Sheet } from '../components/ui'
 import { DailyBars, Donut, Sankey, Treemap, WeekBars } from '../components/charts'
 import { useActions } from '../components/Actions'
 import { SplitActions, SplitLine } from '../components/Split'
+import { PendingActions, PendingTag } from '../components/Pending'
 
 /** Day totals in the strip: "86", "1,2 mil" — the R$ is implied. */
 const num = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 })
@@ -67,6 +68,8 @@ export default function Gastos() {
   const shown = scope.filter(matches)
   const list = (view === 'dia' ? shown.filter((x) => x.date === day) : shown).sort((a, b) => b.date.localeCompare(a.date))
   const total = list.reduce((s, x) => s + spendOf(x), 0)
+  // Pendentes de revisão (notificações) already count in the total: the header says how much of it is still to review.
+  const pendingTotal = list.reduce((s, x) => s + (isPending(x) ? spendOf(x) : 0), 0)
   const scheduled = view === 'mes' ? data.transactions.filter((x) => !isPosted(x, t) && payMatches(x, pay) && monthKey(x.date) === mk && matches(x)).sort((a, b) => a.date.localeCompare(b.date)) : []
   const filtered = Boolean(cat || needle || pay !== 'todos')
   // Card bill payments sit in the timeline, muted and outside every total (they aren't spending). No category → hidden under a chip.
@@ -112,7 +115,8 @@ export default function Gastos() {
     <div>
       <ScreenHeader
         title="Gastos"
-        sub={<span className="money">{plural(list.length, 'lançamento', 'lançamentos')} · <span className="text-ink font-semibold">{money(total)}</span></span>}
+        sub={<span className="money">{plural(list.length, 'lançamento', 'lançamentos')} · <span className="text-ink font-semibold">{money(total)}</span>
+          {pendingTotal > 0 && <span className="text-warning"> · inclui {money(pendingTotal)} pendente</span>}</span>}
         action={<button className="btn h-11 px-4 md:hidden" onClick={openNew}><Plus size={18} strokeWidth={2.5} />Novo</button>}
       />
 
@@ -200,9 +204,10 @@ export default function Gastos() {
                         </p>
                         <p className="truncate text-[13px] text-faint">{t.category}{t.bank ? ` · ${t.bank}` : ''}{t.note ? ` · ${t.note}` : ''}</p>
                         <SplitLine t={t} />
+                        <PendingTag t={t} />
                       </div>
                       <span className="money flex-none font-semibold">{money(t.amount)}</span>
-                      <button aria-label={`Ações de ${t.merchant}`} onClick={() => setMenu(t)}
+                      <button aria-label={`${isPending(t) ? 'Revisar' : 'Ações de'} ${t.merchant}`} onClick={() => setMenu(t)}
                         className="grid size-10 flex-none place-items-center rounded-full text-faint transition-colors hover:bg-raised hover:text-ink">
                         <MoreHorizontal size={18} />
                       </button>
@@ -244,7 +249,12 @@ export default function Gastos() {
       </Sheet>
 
       <Sheet open={menu !== null} onClose={() => setMenu(null)} title={menu?.merchant ?? ''}>
-        {menu && (
+        {/* A pending row (from a notification) is confirmed, revised or discarded first; the full menu comes after. */}
+        {menu && isPending(menu) && (
+          <PendingActions tx={menu} onClose={() => setMenu(null)}
+            summary={<p className="money mb-2 text-sm text-muted">{money(menu.amount)} · {dayLabel(menu.date)} · {menu.category}</p>} />
+        )}
+        {menu && !isPending(menu) && (
           <SplitActions tx={menu} onClose={() => setMenu(null)} summary={
             <p className="money mb-2 text-sm text-muted">{money(menu.amount)} · {dayLabel(menu.date)} · {menu.category}
               {menu.subscription_id && <> · ↻ {subName(menu.subscription_id) ?? 'assinatura'}</>}</p>}>

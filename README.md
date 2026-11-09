@@ -90,6 +90,19 @@ No PWA, linhas com data futura ficam fora de Hoje e dos totais de Gastos (aparec
 Dívidas tem as abas Faturas | Parcelas | Assinaturas. Token:
 `$SUPABASE_ACCESS_TOKEN` ou `/home/box/.secrets/supabase_access_token` (nunca impresso). `BUFFET_ROLLBACK=1` testa sem gravar.
 
+## Captura por notificação (MacroDroid → Edge Function)
+Cada notificação de compra/PIX do Nubank vira um **gasto pendente de revisão** (`review_status='pending'`), que já conta nos totais
+com marcador. Débito/PIX da conta do saldo já descontam o `cash_balance` (`cash_debited`); crédito entra na fatura pelo ciclo do
+cartão; descartar desfaz os dois. Notificação repetida não duplica, e o que também foi lançado pelo chat fica marcado como possível
+duplicata. Passo a passo (MacroDroid, secret, deploy) e decisões: `docs/captura-notificacoes.md`.
+```bash
+scripts/buffet pending [--inbox 30]          # pendentes + estornos; --inbox: o que cada notificação virou
+scripts/buffet review <gasto> --category Alimentação [--merchant X] [--debit|--pix|--credit Nubank] [--split] [--keep-pending]
+scripts/buffet confirm <gasto> | --all       # --all pula possível duplicata
+scripts/buffet discard <gasto>               # devolve o caixa, tira da fatura; com id de estorno, só dispensa
+```
+No PWA: cartão **Pendentes de revisão** em Hoje (Confirmar · Revisar · Descartar) e tag "Pendente" nas linhas de Gastos.
+
 ## Migrations
 `supabase/migrations/*.sql` → `scripts/apply_migrations_https.py [--dry-run]` (Management API; registra em
 `public._buffet_migrations`, separado do `_migrations` do fitness porque as versions colidem no mesmo projeto).
@@ -103,4 +116,5 @@ Abra a URL no Chrome → menu ⋮ → **Instalar app** (ou "Adicionar à tela in
 - `web/src/data/store.ts` — `DataStore`: `supabaseStore` (tabelas `public.buffet_*`; `save` só grava o que mudou,
   `source='app'`) ou `localStore` (F0).
 - `supabase/migrations/` — tabelas `public.buffet_*` aplicadas no projeto do fitness (`qlphmxjehsexuxspspaw`).
+- `supabase/functions/buffet-ingest-notification` — Edge Function da captura; parser, categoria e handler em `supabase/functions/_shared` (testados em `web/tests/notificacoes*.test.ts`, com o SQL rodando de verdade no PGlite).
 - Ícones: `npm run icons` (Python + Pillow) gera `web/public/icons/*.png`.

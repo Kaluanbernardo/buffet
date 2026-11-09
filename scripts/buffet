@@ -32,6 +32,17 @@ DIVIDIDO E REEMBOLSO (o valor cheio nunca muda; somas de gasto usam effective_am
   buffet unreimburse <gasto>                  zera o reembolso e tira do cash_balance só o que tinha entrado
   buffet receivable                           o que falta receber: lista e total
 
+PENDENTES DE NOTIFICAÇÃO (docs/captura-notificacoes.md; review_status='pending' já conta nos totais)
+  O MacroDroid manda cada notificação do banco para a Edge Function, que cria o gasto pendente. Débito/PIX da conta do saldo já
+  descontaram o cash_balance (cash_debited); crédito já está na fatura. <gasto> = id, começo do id ou trecho do merchant
+  buffet pending [--inbox [N]]                pendentes + estornos a revisar; --inbox: as últimas N notificações e o que viraram
+  buffet review <gasto> [--merchant X] [--category Y] [--note t] [--debit | --pix | --credit <cartão>] [--bank b] [--amount v]
+                [--date d] [--split] [--share N] [--unsplit] [--reimburse v | --reimburse-all] [--no-cash] [--keep-pending]
+        edita e confirma numa transação; mudar valor/meio/banco/data refaz caixa e fatura. --keep-pending: edita sem confirmar
+  buffet confirm <gasto> [<gasto> ...] | --all   confirma sem editar; --all pula os marcados como possível duplicata
+  buffet discard <gasto | estorno>            descarta o pendente: apaga, tira da fatura e devolve ao caixa o que ele descontou;
+                                              com o id de um estorno (buffet pending), só tira da lista
+
 CARTÕES E FATURAS (fatura = gastos method=credit agrupados por (bank, bill_month); pagamento não é gasto)
   buffet card set <cartão> --closing 4 --due 11   ciclo do cartão (jsonb banks de buffet_app_config)
   buffet bill [--card Nubank] [--month AAAA-MM]   fatura (padrão: aberta): itens, não detalhado, total, fecha/vence
@@ -351,6 +362,19 @@ def cmd_expense(a):
     if sub:
         print(f"vinculado à assinatura {sub['name']}; próxima {dm(rows[0]['next_due'])}", file=sys.stderr)
         price_warn(sub, amount)
+    pending_dup_warn(rows[0]["id"])
+
+
+def pending_dup_warn(tx_id):
+    """O trigger do banco marca o pendente de notificação com mesmo valor a até 1 dia; avisa para não contar duas vezes."""
+    try:
+        dups = bot("select id, date, amount, merchant, method from public.buffet_transactions "
+                   f"where review_status = 'pending' and possible_duplicate_of = {lit(tx_id)}")
+    except SqlError:
+        return                           # migration de notificações ainda não aplicada
+    for p in dups:
+        print(f"aviso: possível duplicata do pendente {p['id'][:8]} ({dm(p['date'])} {brl(float(p['amount']))} {p['merchant']}, "
+              f"via notificação). Se for o mesmo gasto: buffet discard {p['id'][:8]}", file=sys.stderr)
 
 
 def expense_plan(o, date, total, category):
@@ -383,11 +407,17 @@ def expense_plan(o, date, total, category):
     print(f"{o['merchant']} · {brl(total)} em {n}x no {card}")
     print(" · ".join(f"{r['k']}/{n} {mon(r['bill_month'])} {brl(float(r['amount'])).replace('R$ ', '')}" for r in rows))
     print(f"plano: {rows[0]['debt_id']}")
+    first = next((r for r in rows if r["k"] == 1), None)
+    if first:
+        pending_dup_warn(first["id"])
 
 
 def cmd_del(a):
     if len(a) != 1:
         sys.exit("uso: buffet del <id>")
+    if pending_ids(f"id = {lit(a[0])}"):
+        sys.exit(f"erro: {a[0]} está pendente de revisão (veio de notificação). Use buffet discard {a[0]} — devolve o caixa e "
+                 "tira da fatura — ou buffet confirm antes de apagar")
     plan = bot(f"select t.debt_id, d.description from public.buffet_transactions t join public.buffet_debts d on d.id = t.debt_id "
                f"where t.id = {lit(a[0])}")
     if plan:
@@ -418,17 +448,22 @@ def cmd_list(a):
     except SqlError:
         rows = bot(f"select {TX_COLS}, {SPLIT_COLS} from public.buffet_transactions where {where} order by date desc, created_at desc")
     t = today().isoformat()
+    pend = pending_ids(where)
     for r in rows:
         if str(r["date"]) > t:
             r["note"] = "(agendada) " + (r.get("note") or "")
+        if r["id"] in pend:
+            r["note"] = "(pendente) " + (r.get("note") or "")
         r["parte"] = split_tag(r)
     cols = TX_COLS.split(", ") + (["sub"] if any("sub" in r for r in rows) else []) + (["parte"] if any(r["parte"] for r in rows) else [])
     table(rows, cols)
     if rows:
         future = [r for r in rows if str(r["date"]) > t]
         spend = lambda xs: brl(sum(float(r["effective_amount"]) for r in xs))
+        waiting = [r for r in rows if r["id"] in pend]
         print(f"\n{len(rows)} lançamento(s) · total {spend(rows)}"
-              + (f" (inclui {len(future)} agendada(s), {spend(future)})" if future else ""))
+              + (f" (inclui {len(future)} agendada(s), {spend(future)})" if future else "")
+              + (f" (inclui {len(waiting)} pendente(s) de revisão, {spend(waiting)}: buffet pending)" if waiting else ""))
     bills = bot(f"select {BILL_COLS} from public.buffet_card_payments where {where} order by date desc, created_at desc")
     if bills:
         print("\npagamentos de fatura (fora do total):")
@@ -592,6 +627,177 @@ def cmd_receivable(a):
         print(f"\n{len(now)} gasto(s) · total a receber {brl(sum(owed(r) for r in now))}")
     if len(now) < len(rows):
         print(f"(e {len(rows) - len(now)} com data futura, que só entram no total quando chegar a data)")
+
+
+# ---------------------------------------------------------------- pendentes de notificação
+# Gasto que chegou pelo MacroDroid (Edge Function buffet-ingest-notification) entra com review_status='pending' e já conta nos
+# totais. Revisar, confirmar e descartar são funções SQL (public.buffet_tx_review|discard, buffet_notif_dismiss), as mesmas do app.
+METHOD_PT = {"debit": "débito", "pix": "PIX", "credit": "crédito", "cash": "dinheiro"}
+PENDING_COLS = "id, date, amount, merchant, category, bank, method, bill_month, note, cash_debited, possible_duplicate_of"
+NO_MIGRATION = "erro: a migration de notificações (20261109120000_buffet_notification_capture.sql) ainda não foi aplicada"
+
+
+def pending_ids(where="true"):
+    """ids pendentes de revisão entre as linhas de `where`; vazio se a migration ainda não foi aplicada."""
+    try:
+        return {r["id"] for r in bot(f"select id from public.buffet_transactions where review_status = 'pending' and ({where})")}
+    except SqlError:
+        return set()
+
+
+def review_patch(o):
+    """Opções do buffet review → p_patch de public.buffet_tx_review (só as chaves presentes mudam)."""
+    methods = [m for m in ("debit", "pix", "credit") if o.get(m)]
+    if len(methods) > 1:
+        sys.exit("erro: use só um entre --debit, --pix e --credit")
+    if o.get("credit") and o.get("bank"):
+        sys.exit("erro: no crédito o banco é o cartão (--credit Nubank); não use --bank")
+    if o.get("unsplit") and (o.get("split") or "share" in o):
+        sys.exit("erro: use --split/--share ou --unsplit, não os dois")
+    if "reimburse" in o and o.get("reimburse-all"):
+        sys.exit("erro: use --reimburse v ou --reimburse-all, não os dois")
+    if o.get("no-cash") and not ("reimburse" in o or o.get("reimburse-all")):
+        sys.exit("erro: --no-cash só vale com --reimburse/--reimburse-all")
+    p = {}
+    if "merchant" in o:
+        p["merchant"] = o["merchant"]
+    if "category" in o:
+        p["category"] = pcategory(o["category"])
+    if "note" in o:
+        p["note"] = o["note"] or None
+    if "amount" in o:
+        p["amount"] = pmoney(o["amount"])
+    if "date" in o:
+        p["date"] = pdate(o["date"])
+    if methods:
+        p["method"] = methods[0]
+        if methods[0] == "credit":
+            p["bank"] = pbank(o["credit"])
+    if o.get("bank"):
+        p["bank"] = pbank(o["bank"])
+    if o.get("split") or "share" in o:
+        p["share"] = pshare(o.get("share"))
+    if o.get("unsplit"):
+        p["share"] = None
+    if "reimburse" in o:
+        p["reimburse"] = pmoney(o["reimburse"])
+    if o.get("reimburse-all"):
+        p["reimburse"] = None            # tudo o que falta
+    if "reimburse" in p and o.get("no-cash"):
+        p["reimburse_cash"] = False
+    return p
+
+
+def review_line(r):
+    where = f"fatura {r['bank']} {mon(r['bill_month'])}" if r.get("bill_month") else (r.get("bank") or "sem banco")
+    state = "confirmado" if r.get("review_status") == "confirmed" else "pendente"
+    tag = split_tag(r)
+    return (f"{r['merchant']} · {brl(float(r['amount']))} · {r['category']} · {METHOD_PT.get(r.get('method'), '?')} {where} · {state}"
+            + (f" · {tag}" if tag else "") + f" · {cash_note(r)}")
+
+
+def cmd_pending(a):
+    pos, o = opts(a, bools=("inbox",))
+    try:
+        if o.get("inbox"):
+            n = int(pos[0]) if pos else 20
+            rows = bot("select id, received_at, status, kind, bank, method, amount, merchant, reason, seen_count "
+                       f"from public.buffet_notification_inbox order by received_at desc limit {max(1, min(n, 500))}")
+            table([{"id": r["id"][:8], "chegou": str(r["received_at"])[5:16].replace("T", " "), "status": r["status"], "tipo": r["kind"],
+                    "banco": r["bank"], "meio": METHOD_PT.get(r["method"]) if r["method"] else None,
+                    "valor": brl(float(r["amount"])) if r["amount"] is not None else None, "merchant": r["merchant"],
+                    "motivo": r["reason"], "vezes": r["seen_count"]} for r in rows])
+            return
+        if pos:
+            sys.exit("uso: buffet pending [--inbox [N]]")
+        rows = bot(f"select {PENDING_COLS} from public.buffet_transactions where review_status = 'pending' order by date, created_at")
+        refunds = bot("select id, posted_at, bank, amount, merchant from public.buffet_notification_inbox "
+                      "where status = 'refund' order by posted_at")
+    except SqlError:
+        sys.exit(NO_MIGRATION)
+    others = {}
+    dup_ids = [r["possible_duplicate_of"] for r in rows if r["possible_duplicate_of"]]
+    if dup_ids:
+        others = {r["id"]: r for r in bot(f"select id, date, amount, merchant, source from public.buffet_transactions "
+                                          f"where id in ({', '.join(lit(i) for i in dup_ids)})")}
+
+    def warn(r):
+        d = others.get(r["possible_duplicate_of"])
+        return (f"possível duplicata de {d['id'][:8]} ({dm(d['date'])} {brl(float(d['amount']))} {d['merchant']})" if d else None)
+
+    table([{"id": r["id"][:8], "data": dm(r["date"]), "valor": brl(float(r["amount"])).replace("R$ ", ""), "merchant": r["merchant"],
+            "categoria": r["category"], "meio": METHOD_PT.get(r["method"], r["method"]), "banco": r["bank"],
+            "caixa/fatura": (f"−{brl(float(r['cash_debited']))}" if float(r["cash_debited"] or 0) else
+                             f"fatura {mon(r['bill_month'])}" if r["bill_month"] else "–"),
+            "aviso": warn(r) or r["note"]} for r in rows])
+    if rows:
+        cash = sum(float(r["cash_debited"] or 0) for r in rows)
+        print(f"\n{len(rows)} pendente(s) · {brl(sum(float(r['amount']) for r in rows))} (já nos totais)"
+              + (f" · {brl(cash)} já descontados do caixa" if cash else ""))
+        print("confirmar: buffet confirm <id> | --all · editar: buffet review <id> --category X · descartar: buffet discard <id>")
+    if refunds:
+        print("\nestornos recebidos (nada foi alterado; ajuste/apague o gasto original se precisar, depois buffet discard <id>):")
+        table([{"id": r["id"][:8], "data": dm(str(r["posted_at"])[:10]), "banco": r["bank"],
+                "valor": brl(float(r["amount"])) if r["amount"] is not None else None, "merchant": r["merchant"]} for r in refunds])
+
+
+PENDING_WHERE = "review_status = 'pending'"
+
+
+def cmd_review(a):
+    pos, o = opts(a, flags=("merchant", "category", "note", "credit", "bank", "amount", "date", "share", "reimburse"),
+                  bools=("debit", "pix", "split", "unsplit", "reimburse-all", "no-cash", "keep-pending"))
+    if len(pos) != 1:
+        sys.exit("uso: buffet review <gasto> [--merchant X] [--category Y] [--note t] [--debit | --pix | --credit <cartão>] [--bank b] "
+                 "[--amount v] [--date d] [--split] [--share N] [--unsplit] [--reimburse v | --reimburse-all] [--no-cash] [--keep-pending]")
+    patch = review_patch(o)
+    t = resolve_tx(pos[0], PENDING_WHERE, "pendente de revisão")
+    r = tx_call("buffet_tx_review", lit(t["id"]), f"{lit(json.dumps(patch, ensure_ascii=False))}::jsonb",
+                "false" if o.get("keep-pending") else "true")
+    print(review_line(r))
+
+
+def cmd_confirm(a):
+    pos, o = opts(a, bools=("all",))
+    if o.get("all"):
+        if pos:
+            sys.exit("uso: buffet confirm --all (sem ids)")
+        try:
+            # Um comando só: confirma todos os pendentes sem marca de possível duplicata.
+            done = bot("select public.buffet_tx_review(id, '{}'::jsonb, true) as r from public.buffet_transactions "
+                       "where review_status = 'pending' and possible_duplicate_of is null")
+            left = bot(f"select id, merchant, amount from public.buffet_transactions where {PENDING_WHERE}")
+        except SqlError:
+            sys.exit(NO_MIGRATION)
+        print(f"{len(done)} confirmado(s)")
+        for r in left:
+            print(f"ficou pendente (possível duplicata): {r['id'][:8]} {brl(float(r['amount']))} {r['merchant']} "
+                  f"→ buffet confirm {r['id'][:8]} ou buffet discard {r['id'][:8]}", file=sys.stderr)
+        return
+    if not pos:
+        sys.exit("uso: buffet confirm <gasto> [<gasto> ...] | --all")
+    for key in pos:
+        t = resolve_tx(key, PENDING_WHERE, "pendente de revisão")
+        print(review_line(tx_call("buffet_tx_review", lit(t["id"]), "'{}'::jsonb", "true")))
+
+
+def cmd_discard(a):
+    if len(a) != 1:
+        sys.exit("uso: buffet discard <gasto | estorno>")
+    key = a[0]
+    try:
+        cond = f"id = {lit(key)}" + (f" or left(id, {len(key)}) = {lit(key)}" if len(key) >= 6 else "")
+        ref = bot(f"select id from public.buffet_notification_inbox where status = 'refund' and ({cond})")
+    except SqlError:
+        sys.exit(NO_MIGRATION)
+    if len(ref) == 1:
+        r = tx_call("buffet_notif_dismiss", lit(ref[0]["id"]))
+        print(f"estorno {brl(float(r['amount'])) if r.get('amount') is not None else ''} {r.get('merchant') or ''} dispensado".replace("  ", " "))
+        return
+    t = resolve_tx(key, PENDING_WHERE, "pendente de revisão")
+    r = tx_call("buffet_tx_discard", lit(t["id"]))
+    print(f"descartado: {r['merchant']} · {brl(float(r['amount']))}"
+          + (f" · saiu da fatura {r['bank']} {mon(r['bill_month'])}" if r.get("bill_month") else "") + f" · {cash_note(r)}")
 
 
 # ---------------------------------------------------------------- cartões e faturas
@@ -1114,7 +1320,8 @@ def cmd_sub(a):
 COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-jsonl": cmd_import_jsonl,
             "pay-bill": cmd_pay_bill, "del-bill": cmd_del_bill, "sub": cmd_sub, "card": cmd_card, "bill": cmd_bill,
             "bills": cmd_bills, "plans": cmd_plans, "del-plan": cmd_del_plan, "split": cmd_split, "unsplit": cmd_unsplit,
-            "reimburse": cmd_reimburse, "unreimburse": cmd_unreimburse, "receivable": cmd_receivable}
+            "reimburse": cmd_reimburse, "unreimburse": cmd_unreimburse, "receivable": cmd_receivable,
+            "pending": cmd_pending, "review": cmd_review, "confirm": cmd_confirm, "discard": cmd_discard}
 
 
 def main(a):

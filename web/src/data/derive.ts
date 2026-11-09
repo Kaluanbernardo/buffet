@@ -34,7 +34,7 @@ export function applySplit(data: BuffetData, a: SplitAction): BuffetData {
   const clearReimbursed = { reimbursed_amount: undefined, reimbursed_cash: undefined, reimbursed_at: undefined }
   if (a.kind === 'split') {
     if (t.debt_id) throw new Error('parcela de plano não pode ser dividida')
-    if (!(a.share > 0 && a.share < 100)) throw new Error('a sua parte precisa ficar entre 0% e 100%')
+    if (!(a.share >= 0 && a.share < 100)) throw new Error('a sua parte precisa ficar entre 0% e 100%')
     const partner = partnerOf(t.amount, a.share)
     if (partner <= 0) throw new Error('com essa divisão não sobra nada a receber')
     if (partner < got) throw new Error(`a parte da outra pessoa (${partner}) ficaria menor que o já recebido (${got})`)

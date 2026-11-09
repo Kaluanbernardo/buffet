@@ -13,13 +13,17 @@ const TAG: Record<SplitState, { label: string; tone: string }> = {
   reimbursed: { label: 'Reembolsado', tone: 'pill-ok' },
 }
 
+const FULL_LABEL = 'Reembolsável integral'
+
 /** Tag + what it means for this row; the row itself keeps showing the full amount. */
 export function SplitLine({ t }: { t: Transaction }) {
   const state = splitState(t)
   if (!state) return null
+  // Share 0 is a real split (the other person owes it all), not "not split": until something is received, say so.
+  const label = state === 'split' && t.split_share_pct === 0 ? FULL_LABEL : TAG[state].label
   return (
     <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] text-faint">
-      <span className={`pill ${TAG[state].tone}`}>{TAG[state].label}</span>
+      <span className={`pill ${TAG[state].tone}`}>{label}</span>
       <span className="money">{state === 'reimbursed' ? `sua parte ${money(spendOf(t))}` : `a receber ${money(owedOf(t))}`}</span>
     </p>
   )
@@ -56,7 +60,7 @@ function SplitForm({ tx, onDone, onCancel }: { tx: Transaction; onDone: () => vo
   const { busy, error, run } = useSplitRun()
   const [text, setText] = useState(String(tx.split_share_pct ?? 50).replace('.', ','))
   const share = parseMoney(text)
-  const ok = share > 0 && share < 100
+  const ok = share >= 0 && share < 100   // 0 = fully reimbursable; empty text parses to NaN
   const partner = ok ? partnerOf(tx.amount, share) : 0
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -75,7 +79,9 @@ function SplitForm({ tx, onDone, onCancel }: { tx: Transaction; onDone: () => vo
           <Percent size={15} aria-hidden className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-faint" />
         </div>
       </div>
-      {ok
+      {ok && share === 0
+        ? <p className="money text-sm text-muted">Reembolso integral: sua parte é <span className="font-semibold text-ink">{money(0)}</span> e <span className="font-semibold text-ink">{money(partner)}</span> ficam a receber. O saldo não muda agora.</p>
+        : ok
         ? <p className="money text-sm text-muted">De {money(tx.amount)}, sua parte é <span className="font-semibold text-ink">{money(tx.amount - partner)}</span> e <span className="font-semibold text-ink">{money(partner)}</span> ficam a receber. O saldo não muda agora.</p>
         : <p className="text-sm text-negative">Informe um percentual entre 0 e 100.</p>}
       <FormError>{error}</FormError>
@@ -160,6 +166,13 @@ export function SplitActions({ tx, onClose, summary, children }: { tx: Transacti
       redo ? { kind: 'reimburse', id: tx.id, amount: got, date: tx.reimbursed_at, cash: cash > 0 } : undefined)
     onClose()
   }
+  // Same operation as the form with 0%; marking a row that is already 0% changes nothing.
+  const fullReimburse = async () => {
+    if (!(await run({ kind: 'split', id: tx.id, share: 0 }))) return
+    toast(`${tx.merchant} reembolsável integral: a receber ${money(partnerOf(tx.amount, 0))}`,
+      tx.split_share_pct == null ? { kind: 'unsplit', id: tx.id } : { kind: 'split', id: tx.id, share: tx.split_share_pct })
+    onClose()
+  }
   const row = 'btn-ghost h-11 justify-start px-4'
   return (
     <div className="grid gap-2">
@@ -171,6 +184,9 @@ export function SplitActions({ tx, onClose, summary, children }: { tx: Transacti
         <button className={row} data-autofocus onClick={() => setForm('receive')}><HandCoins size={16} /><span className="money">Recebi {money(owedOf(tx))}</span></button>
       )}
       {state && <button className={row} onClick={() => setForm('split')}><Percent size={16} />Ajustar divisão</button>}
+      {!tx.debt_id && (
+        <button className={row} disabled={busy} onClick={fullReimburse}><HandCoins size={16} /><span className="money">Reembolsável integral (sua parte 0%, a receber {money(partnerOf(tx.amount, 0))})</span></button>
+      )}
       {state === 'split' && <button className={row} disabled={busy} onClick={unsplit}><Undo2 size={16} />Não é dividido</button>}
       {tx.reimbursed_amount != null && (
         <button className={row} disabled={busy} onClick={unreimburse}><Undo2 size={16} /><span className="money">Desfazer reembolso de {money(tx.reimbursed_amount)}</span></button>

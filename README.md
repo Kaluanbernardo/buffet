@@ -72,11 +72,14 @@ o aluguel"; "quanto tenho a receber?" →
 ```bash
 scripts/buffet expense 1000 --merchant "Aluguel exemplo" --category Moradia --pix --split [--share 50]
 scripts/buffet split aluguel [--share 60]     # marca ou ajusta a SUA parte, em %; não mexe no caixa
+scripts/buffet split aluguel --share 0        # reembolso integral: sua parte 0%, a outra pessoa deve o valor todo; não mexe no caixa
 scripts/buffet unsplit aluguel                # só sem reembolso registrado
 scripts/buffet reimburse aluguel [--amount 300] [--date d] [--no-cash]   # padrão: tudo o que falta; soma ao cash_balance
 scripts/buffet unreimburse aluguel            # zera o reembolso e tira do cash_balance só o que tinha entrado
 scripts/buffet receivable                     # lista e total a receber
 ```
+`--share 0` é o caso reembolsável por inteiro: num gasto de 100 ("Aluguel exemplo"), a receber 100; o caixa e o gasto contado só
+mudam quando o `reimburse` registra o que entrou (100 cheio ou em partes). `--share 100` e negativos seguem recusados.
 `<gasto>` = id, começo do id ou trecho do merchant; busca ambígua aborta e lista as opções. CLI e PWA (menu "…" em Gastos e
 "A receber" em Hoje) usam as mesmas funções SQL, `public.buffet_tx_split|unsplit|reimburse|unreimburse`: security invoker, valem
 RLS e grants, e gasto e saldo mudam na mesma transação. Parcela de plano não pode ser dividida, e linha com reembolso não pode ser

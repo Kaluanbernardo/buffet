@@ -73,6 +73,11 @@ ASSINATURAS (buffet_subscriptions — compromisso, nunca soma; o gasto real cont
   buffet sub pause|resume|cancel <sub> [--date d]   resume rola a próxima até >= hoje; cancel guarda canceled_on
   buffet sub due [--days 7]                   cobra nos próximos N dias + não apareceu + preço mudou + renovação anual
 
+PLUGGY (docs/pluggy-sync.md)
+  buffet pluggy-sync [--dry-run] [--days 45] [--verbose]
+        importa do Meu Pluggy o que é novo, idempotente pelo id; atualiza o caixa pelo saldo. --dry-run lê tudo e não grava.
+        Possível duplicata de lançamento da notificação ou manual entra como pendente: buffet pending
+
 SQL
   buffet sql "<SELECT ...>"                   SQL livre como bot (um comando)
   buffet admin-sql "<SQL>"                    como postgres (evitar; só manutenção)
@@ -1322,6 +1327,17 @@ COMMANDS = {"expense": cmd_expense, "del": cmd_del, "list": cmd_list, "import-js
             "bills": cmd_bills, "plans": cmd_plans, "del-plan": cmd_del_plan, "split": cmd_split, "unsplit": cmd_unsplit,
             "reimburse": cmd_reimburse, "unreimburse": cmd_unreimburse, "receivable": cmd_receivable,
             "pending": cmd_pending, "review": cmd_review, "confirm": cmd_confirm, "discard": cmd_discard}
+
+
+def cmd_pluggy_sync(a):
+    # Módulo à parte: a regra do sync é grande e testada sozinha (scripts/tests/). Importado aqui para não pesar nos outros comandos.
+    from types import SimpleNamespace
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import buffet_pluggy
+    buffet_pluggy.main(a, SimpleNamespace(bot=bot, lit=lit, config=config, today=today, opts=opts, brl=brl, CATEGORIES=CATEGORIES))
+
+
+COMMANDS["pluggy-sync"] = cmd_pluggy_sync
 
 
 def main(a):

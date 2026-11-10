@@ -14,6 +14,8 @@ const WRAPPER = `
 import importlib.machinery, importlib.util, sys, urllib.request
 real = urllib.request.urlopen
 def fake(req, timeout=None):
+    if req.full_url.startswith("https://api.pluggy.ai/"):
+        return real(urllib.request.Request(sys.argv[2] + "__pluggy" + req.full_url[len("https://api.pluggy.ai"):], data=req.data, method=req.get_method(), headers={"Content-Type": "application/json"}), timeout=60)
     assert req.full_url.startswith("https://api.supabase.com/v1/projects/"), req.full_url
     return real(urllib.request.Request(sys.argv[2], data=req.data, method="POST", headers={"Content-Type": "application/json"}), timeout=60)
 urllib.request.urlopen = fake
@@ -23,11 +25,18 @@ m = importlib.util.module_from_spec(spec); loader.exec_module(m)
 m.entry(sys.argv[3:])
 `
 
-export async function cliServer(d: Db) {
+/** pluggy: responde as chamadas de api.pluggy.ai (caminho → JSON). env: variáveis extras para o CLI. */
+export async function cliServer(d: Db, opts: { pluggy?: (path: string) => unknown; env?: Record<string, string> } = {}) {
   const server: Server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => { body += c })
     req.on('end', async () => {
+      if (req.url?.startsWith('/__pluggy')) {
+        res.setHeader('content-type', 'application/json')
+        res.statusCode = 200
+        res.end(JSON.stringify(opts.pluggy?.(req.url.slice('/__pluggy'.length)) ?? {}))
+        return
+      }
       const { query } = JSON.parse(body) as { query: string }
       res.setHeader('content-type', 'application/json')
       try {
@@ -47,7 +56,7 @@ export async function cliServer(d: Db) {
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`
   /** `buffet <args>`: stdout, stderr e código de saída. */
   const cli = (...args: string[]) => new Promise<{ out: string; err: string; code: number | null }>((ok) => {
-    const p = spawn('python3', ['-I', '-B', '-c', WRAPPER, CLI, url, ...args], { env: { PATH: process.env.PATH ?? '', SUPABASE_ACCESS_TOKEN: 'token-falso-de-teste' } })
+    const p = spawn('python3', ['-I', '-B', '-c', WRAPPER, CLI, url, ...args], { env: { PATH: process.env.PATH ?? '', SUPABASE_ACCESS_TOKEN: 'token-falso-de-teste', ...opts.env } })
     let out = '', err = ''
     p.stdout.on('data', (c) => { out += c })
     p.stderr.on('data', (c) => { err += c })

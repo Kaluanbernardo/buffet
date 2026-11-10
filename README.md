@@ -116,5 +116,6 @@ Abra a URL no Chrome → menu ⋮ → **Instalar app** (ou "Adicionar à tela in
 - `web/src/data/store.ts` — `DataStore`: `supabaseStore` (tabelas `public.buffet_*`; `save` só grava o que mudou,
   `source='app'`) ou `localStore` (F0).
 - `supabase/migrations/` — tabelas `public.buffet_*` aplicadas no projeto do fitness (`qlphmxjehsexuxspspaw`).
+- `scripts/buffet_pluggy.py` — sincronização diária com o Meu Pluggy (`buffet pluggy-sync`, `docs/pluggy-sync.md`); testes em `scripts/tests` e `web/tests/pluggy-sync.test.ts`.
 - `supabase/functions/buffet-ingest-notification` — Edge Function da captura; parser, categoria e handler em `supabase/functions/_shared` (testados em `web/tests/notificacoes*.test.ts`, com o SQL rodando de verdade no PGlite).
 - Ícones: `npm run icons` (Python + Pillow) gera `web/public/icons/*.png`.
